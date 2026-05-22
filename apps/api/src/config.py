@@ -12,6 +12,9 @@ class Settings(BaseSettings):
     # Usar SSL en conexiones PostgreSQL (Supabase lo exige). Poner false solo para
     # un Postgres local sin SSL.
     db_ssl: bool = True
+    # Verificar el certificado del servidor. False por defecto: las redes corporativas
+    # con inspeccion TLS rompen la verificacion. La conexion igual va encriptada.
+    db_ssl_verify: bool = False
 
     # Tenant por defecto (multi-tenant llega en Fase 2).
     default_tenant_id: str = "curifor"

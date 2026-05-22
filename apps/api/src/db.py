@@ -34,7 +34,14 @@ def _make_engine():
         if "pg8000" in url and settings.db_ssl:
             import ssl
 
-            connect_args = {"ssl_context": ssl.create_default_context()}
+            ctx = ssl.create_default_context()
+            # En redes corporativas con inspeccion TLS (proxy/antivirus) la verificacion
+            # del certificado falla. La conexion sigue encriptada; solo no se verifica la
+            # cadena. Poner DB_SSL_VERIFY=true si el entorno tiene certificados validos.
+            if not settings.db_ssl_verify:
+                ctx.check_hostname = False
+                ctx.verify_mode = ssl.CERT_NONE
+            connect_args = {"ssl_context": ctx}
     return create_engine(url, connect_args=connect_args, **kwargs)
 
 
