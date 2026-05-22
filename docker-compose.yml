@@ -1,0 +1,29 @@
+# ============================================================
+#  PostgreSQL local - SOLO PARA EL FUTURO (Fase 2 / produccion)
+#
+#  En Fase 0 NO se usa: la app corre sobre SQLite sin instalar nada.
+#  Cuando se quiera escalar a Postgres:
+#    1. Instalar Docker Desktop
+#    2. docker compose up -d
+#    3. En .env: DATABASE_URL=postgresql+psycopg://sugerido:sugerido@localhost:5432/sugerido
+# ============================================================
+services:
+  db:
+    image: postgres:16
+    container_name: sugerido_postgres
+    environment:
+      POSTGRES_USER: sugerido
+      POSTGRES_PASSWORD: sugerido
+      POSTGRES_DB: sugerido
+    ports:
+      - "5432:5432"
+    volumes:
+      - sugerido_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U sugerido"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  sugerido_pgdata:

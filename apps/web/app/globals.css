@@ -1,0 +1,38 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+/* AG Grid (tema Quartz) */
+@import "ag-grid-community/styles/ag-grid.css";
+@import "ag-grid-community/styles/ag-theme-quartz.css";
+
+:root {
+  --font-sans: "IBM Plex Sans", system-ui, -apple-system, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, monospace;
+  --fondo: #f4f6fb;
+}
+
+html,
+body {
+  background-color: var(--fondo);
+  color: #111827;
+  -webkit-font-smoothing: antialiased;
+}
+
+/* Numeros tabulares para que las columnas numericas calcen. */
+.tabular {
+  font-family: var(--font-mono);
+  font-variant-numeric: tabular-nums;
+}
+
+/* Ajustes del tema de AG Grid al azul corporativo. */
+.ag-theme-quartz {
+  --ag-header-background-color: #f8fafc;
+  --ag-header-foreground-color: #1e293b;
+  --ag-row-hover-color: #eff4ff;
+  --ag-selected-row-background-color: #dbe6fe;
+  --ag-font-family: var(--font-sans);
+  --ag-font-size: 13px;
+  --ag-border-color: #e5e7eb;
+  --ag-header-column-resize-handle-color: #cbd5e1;
+}

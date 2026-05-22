@@ -1,0 +1,18 @@
+{
+  "name": "sugerido-compras",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Plataforma SaaS de sugerido de compras (reposicion de inventario). Cliente cero: Curifor S.A.",
+  "workspaces": [
+    "apps/web",
+    "packages/*"
+  ],
+  "scripts": {
+    "dev:web": "npm run dev --workspace apps/web",
+    "build:web": "npm run build --workspace apps/web",
+    "test:web": "npm run test --workspace apps/web"
+  },
+  "engines": {
+    "node": ">=20"
+  }
+}

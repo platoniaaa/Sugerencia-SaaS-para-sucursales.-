@@ -1,0 +1,45 @@
+# --- Python / backend ---
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Base de datos local (SQLite) y archivos cargados
+*.db
+*.sqlite
+*.sqlite3
+apps/api/data/
+apps/api/uploads/
+
+# --- Node / frontend ---
+node_modules/
+.next/
+out/
+dist/
+.turbo/
+*.tsbuildinfo
+
+# --- Entorno / secretos ---
+.env
+.env.local
+.env.*.local
+
+# --- Editor / SO ---
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
+
+# --- Misc ---
+playwright-report/
+test-results/
+*.log
+
+# --- Material de referencia / sueltos (no son parte de la plataforma) ---
+skills/
+Captura de pantalla*.png
+*.pbix

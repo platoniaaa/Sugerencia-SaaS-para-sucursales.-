@@ -1,0 +1,21 @@
+# Backend "Sugerido de Compras" - Fase 0
+# Dependencias minimas (sin pandas/duckdb/alembic todavia; ver docs/adr/0003).
+#
+# Se usan limites inferiores (>=) en vez de versiones fijas para que pip baje
+# wheels ya compilados para tu version de Python (ej. 3.14) y NO intente compilar
+# desde codigo fuente (que requeriria un compilador de Rust/C++).
+
+fastapi>=0.115
+uvicorn[standard]>=0.34
+sqlalchemy>=2.0.36
+pydantic>=2.11
+pydantic-settings>=2.7
+python-multipart>=0.0.20
+openpyxl>=3.1.5
+httpx>=0.28
+# Driver PostgreSQL para produccion (Supabase). pg8000 es Python puro: sin compilar,
+# funciona en cualquier version de Python (incluida 3.14) y en la nube.
+pg8000>=1.31
+
+# Solo para tests
+pytest>=8.3

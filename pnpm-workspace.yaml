@@ -1,0 +1,7 @@
+# Presente por fidelidad al diseno original del proyecto.
+# En Fase 0 usamos npm workspaces (ver "workspaces" en package.json) porque npm ya
+# esta instalado en el equipo de Francisco. Si en el futuro se migra a pnpm, este
+# archivo ya define los workspaces correctos.
+packages:
+  - "apps/web"
+  - "packages/*"

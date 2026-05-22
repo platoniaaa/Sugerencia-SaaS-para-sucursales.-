@@ -1,0 +1,7 @@
+{
+  "name": "@sugerido/shared-types",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tipos TypeScript compartidos entre apps. En Fase 0 los tipos viven en apps/web/lib/types.ts; este paquete queda reservado para centralizarlos (idealmente generados desde el JSON Schema de Pydantic) en fases siguientes.",
+  "types": "index.d.ts"
+}

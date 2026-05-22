@@ -1,0 +1,134 @@
+"""Logica de consulta del sugerido: aplica filtros, ordena, pagina y calcula KPIs.
+
+NOTA Fase 0: aca NO se calcula el sugerido. Los valores ya vienen del Power BI.
+Solo se filtra/agrega lo que ya esta cargado en la tabla.
+"""
+from sqlalchemy import distinct, func, or_, select
+from sqlalchemy.orm import Session
+
+from ..models import Sugerido
+from ..schemas import SugeridoFiltros
+
+# Columnas por las que se permite ordenar (whitelist para evitar inyeccion).
+SORTABLE = {c.name for c in Sugerido.__table__.columns}
+
+
+def _apply_filters(stmt, f: SugeridoFiltros):
+    if f.q:
+        like = f"%{f.q}%"
+        stmt = stmt.where(or_(Sugerido.producto.ilike(like), Sugerido.descripcion.ilike(like)))
+    if f.sucursales:
+        stmt = stmt.where(Sugerido.nombre_sucursal.in_(f.sucursales))
+    if f.abc:
+        stmt = stmt.where(Sugerido.clasificacion_abc.in_(f.abc))
+    if f.filtro1:
+        stmt = stmt.where(Sugerido.filtro1_final.in_(f.filtro1))
+    if f.tipo_origen:
+        stmt = stmt.where(Sugerido.tipo_origen.in_(f.tipo_origen))
+    if f.proveedor:
+        stmt = stmt.where(Sugerido.proveedor.ilike(f"%{f.proveedor}%"))
+    if f.solo_pedir:
+        # "pedir = Si" tolerante a may/min.
+        stmt = stmt.where(func.lower(Sugerido.pedir) == "si")
+    return stmt
+
+
+def _apply_sort(stmt, sort: str | None):
+    """sort = 'campo' o '-campo' (descendente)."""
+    if not sort:
+        return stmt.order_by(Sugerido.total_sugerido_suc.desc().nullslast())
+    desc = sort.startswith("-")
+    col_name = sort[1:] if desc else sort
+    if col_name in SORTABLE:
+        col = getattr(Sugerido, col_name)
+        return stmt.order_by(col.desc().nullslast() if desc else col.asc().nullslast())
+    return stmt.order_by(Sugerido.total_sugerido_suc.desc().nullslast())
+
+
+def listar(
+    db: Session, f: SugeridoFiltros, page: int = 1, limit: int = 50, sort: str | None = None
+) -> tuple[list[Sugerido], int]:
+    base = _apply_filters(select(Sugerido), f)
+
+    total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
+
+    stmt = _apply_sort(base, sort).offset((page - 1) * limit).limit(limit)
+    items = list(db.scalars(stmt).all())
+    return items, total
+
+
+def kpis(db: Session, f: SugeridoFiltros) -> dict:
+    base = _apply_filters(select(Sugerido), f).subquery()
+
+    total_sugerido = db.scalar(select(func.coalesce(func.sum(base.c.total_sugerido_suc), 0))) or 0
+    valor_total = db.scalar(select(func.coalesce(func.sum(base.c.total_valor_sugerido_clp), 0))) or 0
+    n_productos = db.scalar(select(func.count(distinct(base.c.producto)))) or 0
+    n_proveedores = db.scalar(select(func.count(distinct(base.c.proveedor)))) or 0
+
+    return {
+        "total_sugerido": float(total_sugerido),
+        "valor_total_clp": float(valor_total),
+        "n_productos": int(n_productos),
+        "n_proveedores": int(n_proveedores),
+    }
+
+
+# Dimensiones permitidas para agrupar (para graficos).
+DIMENSIONES = {
+    "sucursal": Sugerido.nombre_sucursal,
+    "marca": Sugerido.filtro1_final,
+    "proveedor": Sugerido.proveedor,
+}
+
+
+def agrupado(db: Session, f: SugeridoFiltros, por: str, limite: int = 15) -> list[dict]:
+    """Agrega el sugerido por una dimension (sucursal/marca/proveedor), respetando filtros.
+
+    Devuelve los `limite` grupos con mayor valor CLP.
+    """
+    col = DIMENSIONES.get(por)
+    if col is None:
+        raise ValueError(f"Dimension no valida: {por}")
+
+    stmt = (
+        _apply_filters(
+            select(
+                col.label("grupo"),
+                func.coalesce(func.sum(Sugerido.total_sugerido_suc), 0).label("total_sugerido"),
+                func.coalesce(func.sum(Sugerido.total_valor_sugerido_clp), 0).label("valor_clp"),
+                func.count(distinct(Sugerido.producto)).label("n_productos"),
+            ),
+            f,
+        )
+        .where(col.isnot(None))
+        .group_by(col)
+        .order_by(func.coalesce(func.sum(Sugerido.total_valor_sugerido_clp), 0).desc())
+        .limit(limite)
+    )
+
+    return [
+        {
+            "grupo": str(row.grupo),
+            "total_sugerido": float(row.total_sugerido),
+            "valor_clp": float(row.valor_clp),
+            "n_productos": int(row.n_productos),
+        }
+        for row in db.execute(stmt).all()
+    ]
+
+
+def pares_filtrados(db: Session, f: SugeridoFiltros) -> list[tuple[str, str]]:
+    """Devuelve los pares (producto, sucursal_id) que cumplen los filtros.
+
+    Se usa para la carga masiva de sugerencias manuales "a todos los productos
+    segun los filtros del dashboard".
+    """
+    stmt = _apply_filters(select(Sugerido.producto, Sugerido.sucursal_id), f)
+    return [(p, s) for p, s in db.execute(stmt).all()]
+
+
+def detalle(db: Session, producto: str, sucursal_id: str) -> Sugerido | None:
+    stmt = select(Sugerido).where(
+        Sugerido.producto == producto, Sugerido.sucursal_id == sucursal_id
+    )
+    return db.scalars(stmt).first()

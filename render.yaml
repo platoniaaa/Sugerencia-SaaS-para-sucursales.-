@@ -1,0 +1,19 @@
+# Blueprint de Render para el backend (FastAPI).
+# Render puede leer este archivo y crear el servicio automaticamente.
+# Las variables marcadas con sync:false se configuran a mano en el panel (son secretas).
+services:
+  - type: web
+    name: sugerido-api
+    runtime: python
+    rootDir: apps/api
+    plan: free
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn src.main:app --host 0.0.0.0 --port $PORT
+    healthCheckPath: /api/health
+    envVars:
+      - key: PYTHON_VERSION
+        value: "3.12.7"
+      - key: DATABASE_URL
+        sync: false   # postgresql+pg8000://...  (cadena de Supabase)
+      - key: CORS_ORIGINS
+        sync: false   # https://tu-app.vercel.app
