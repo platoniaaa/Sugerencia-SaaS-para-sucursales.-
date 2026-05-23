@@ -23,7 +23,7 @@ class Sugerido(Base):
     nombre_sucursal: Mapped[str | None] = mapped_column(String, nullable=True)
 
     # --- Clasificacion / origen ---
-    clasificacion_abc: Mapped[str | None] = mapped_column(String(1), nullable=True, index=True)
+    clasificacion_abc: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     proveedor: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     filtro1_final: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
     tipo_origen: Mapped[str | None] = mapped_column(String, nullable=True, index=True)
