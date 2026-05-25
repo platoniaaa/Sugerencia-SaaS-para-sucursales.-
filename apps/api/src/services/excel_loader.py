@@ -24,6 +24,8 @@ settings = get_settings()
 def _norm(s: str) -> str:
     s = (s or "").strip().lower()
     s = "".join(c for c in unicodedata.normalize("NFKD", s) if not unicodedata.combining(c))
+    for ch in ("?", "(", ")", "%", "$"):
+        s = s.replace(ch, "")
     for ch in (" ", "-", "/", "."):
         s = s.replace(ch, "_")
     while "__" in s:
@@ -79,8 +81,15 @@ HEADER_ALIASES: dict[str, str] = {
     "sugerido_compra_neto": "sugerido_compra_neto",
     "total_sugerido_suc": "total_sugerido_suc",
     "total_valor_sugerido_clp": "total_valor_sugerido_clp",
+    "total_valor_sugerido_suc_clp": "total_valor_sugerido_clp",
+    "valor_sugerido_suc_clp": "total_valor_sugerido_clp",
     "valor_sugerido_clp": "total_valor_sugerido_clp",
     "pedir_flag": "pedir_flag",
+    # Nombres tal como aparecen en el VISUAL de Power BI (medidas):
+    "total_sugerido": "total_sugerido_suc",
+    "stock_activo": "stock_activo_suc",
+    "stock_en_transito": "stock_en_transito_suc",
+    "comprar_en_cd": "comprar_en_el_cd",
 }
 
 # Tipos por campo para castear valores del archivo.
@@ -269,10 +278,14 @@ def persistir_filas(
                 "prioridad_cd": valores.get("prioridad_cd"),
             }
 
-    # Inserts por lotes (Core) -> mucho mas rapido que ORM para miles de filas.
-    def _bulk(model, registros: list[dict], chunk: int = 1000) -> None:
+    # Inserts en multi-fila (un INSERT con muchas VALUES por lote). Con pg8000 esto es
+    # MUCHO mas rapido que executemany (que iria fila por fila por la red). chunk=500
+    # mantiene los parametros por debajo del limite de Postgres (~65k).
+    def _bulk(model, registros: list[dict], chunk: int = 500) -> None:
         for i in range(0, len(registros), chunk):
-            db.execute(insert(model), registros[i : i + chunk])
+            lote = registros[i : i + chunk]
+            if lote:
+                db.execute(insert(model).values(lote))
 
     _bulk(Sugerido, registros_sugerido)
     db.execute(delete(DimProducto).where(DimProducto.tenant_id == tenant))
