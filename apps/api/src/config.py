@@ -37,34 +37,13 @@ class Settings(BaseSettings):
     # 'Sugerido por Sucursal' MAS las medidas calculadas (Total Sugerido, Stock Activo,
     # Traslado, etc.), porque esas son medidas del modelo, no columnas de la tabla.
     # Ajustada al modelo real de Curifor. Si los nombres cambian, editar aqui o en .env.
+    # Se usa ADDCOLUMNS sobre la tabla (no SUMMARIZECOLUMNS): evalua cada medida
+    # fila por fila con context transition, igual que un visual -> trae los valores
+    # reales (con SUMMARIZECOLUMNS las medidas salian en blanco).
     powerbi_dax_query: str = """
 EVALUATE
-SUMMARIZECOLUMNS(
-  'Sugerido por Sucursal'[Producto],
-  'Sugerido por Sucursal'[SucursalID],
-  'Sugerido por Sucursal'[Nombre Sucursal],
-  'Sugerido por Sucursal'[Descripcion],
-  'Sugerido por Sucursal'[Clasificacion ABC],
-  'Sugerido por Sucursal'[Proveedor],
-  'Sugerido por Sucursal'[FILTRO1_Final],
-  'Sugerido por Sucursal'[Tipo Origen],
-  'Sugerido por Sucursal'[Es Importado],
-  'Sugerido por Sucursal'[Unidad de Medida],
-  'Sugerido por Sucursal'[Lead Time Dias],
-  'Sugerido por Sucursal'[LT Efectivo],
-  'Sugerido por Sucursal'[LT CD a Sucursal Dias],
-  'Sugerido por Sucursal'[LT Origen],
-  'Sugerido por Sucursal'[Abastece CD],
-  'Sugerido por Sucursal'[Prioridad CD],
-  'Sugerido por Sucursal'[Tiene Stock CD],
-  'Sugerido por Sucursal'[Demanda Mensual],
-  'Sugerido por Sucursal'[Demanda Diaria],
-  'Sugerido por Sucursal'[Desv Std Mensual],
-  'Sugerido por Sucursal'[Stock de Seguridad],
-  'Sugerido por Sucursal'[Punto de Pedido],
-  'Sugerido por Sucursal'[Costo Unitario],
-  'Sugerido por Sucursal'[Pedir],
-  'Sugerido por Sucursal'[Reemplazos],
+ADDCOLUMNS(
+  'Sugerido por Sucursal',
   "total_sugerido_suc", [Total Sugerido Suc],
   "total_valor_sugerido_clp", [Total Valor Sugerido Suc CLP],
   "sugerido_suc", [Sugerido Suc],
