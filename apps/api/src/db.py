@@ -1,4 +1,5 @@
 """Configuracion de SQLAlchemy: engine, sesiones y base declarativa."""
+import os
 from collections.abc import Generator
 from pathlib import Path
 
@@ -6,6 +7,9 @@ from sqlalchemy import create_engine
 from sqlalchemy.orm import DeclarativeBase, Session, sessionmaker
 
 from .config import get_settings
+
+# En Vercel (serverless) no se mantienen conexiones entre invocaciones.
+EN_SERVERLESS = bool(os.environ.get("VERCEL"))
 
 settings = get_settings()
 
@@ -30,7 +34,13 @@ def _make_engine():
         # PostgreSQL (Supabase): SSL obligatorio + reciclar conexiones para evitar
         # cortes del pooler. pg8000 habilita TLS via ssl_context.
         kwargs["pool_pre_ping"] = True
-        kwargs["pool_recycle"] = 300
+        if EN_SERVERLESS:
+            # Sin pool persistente: cada invocacion abre/cierra su conexion.
+            from sqlalchemy.pool import NullPool
+
+            kwargs["poolclass"] = NullPool
+        else:
+            kwargs["pool_recycle"] = 300
         if "pg8000" in url and settings.db_ssl:
             import ssl
 
