@@ -1,0 +1,15 @@
+name: keep-alive
+
+# Mantiene "despierto" el backend gratis de Render (que se duerme tras ~15 min sin uso)
+# golpeando el healthcheck cada 10 minutos. Asi los trabajadores no esperan el arranque.
+on:
+  schedule:
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Ping backend
+        run: curl -fsS https://sugerido-api.onrender.com/api/health || true
