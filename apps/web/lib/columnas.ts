@@ -39,6 +39,7 @@ export const COLUMNAS: DefColumna[] = [
   { key: "costo_unitario", label: "Costo Unitario", tipo: "clp", visiblePorDefecto: false },
   { key: "unidad_medida", label: "Unidad", tipo: "texto", visiblePorDefecto: false },
   { key: "pedir", label: "Pedir", tipo: "texto", visiblePorDefecto: false },
+  { key: "reemplazos", label: "Reemplazos", tipo: "texto", visiblePorDefecto: false },
 ];
 
 export const KEYS_POR_DEFECTO = COLUMNAS.filter((c) => c.visiblePorDefecto).map((c) => c.key as string);
