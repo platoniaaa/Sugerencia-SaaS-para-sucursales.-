@@ -5,12 +5,13 @@ Levantar con:
 """
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI
+from fastapi import Depends, FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
 from .db import create_all
-from .routers import admin, compras, health, productos, sugerencias_manuales, sugerido
+from .routers import admin, auth, compras, health, productos, sugerencias_manuales, sugerido
+from .services.auth import requiere_auth
 
 settings = get_settings()
 
@@ -42,12 +43,17 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Publicos:
 app.include_router(health.router)
-app.include_router(sugerido.router)
-app.include_router(productos.router)
-app.include_router(sugerencias_manuales.router)
-app.include_router(compras.router)
-app.include_router(admin.router)
+app.include_router(auth.router)
+
+# Protegidos (requieren sesion):
+_protegido = [Depends(requiere_auth)]
+app.include_router(sugerido.router, dependencies=_protegido)
+app.include_router(productos.router, dependencies=_protegido)
+app.include_router(sugerencias_manuales.router, dependencies=_protegido)
+app.include_router(compras.router, dependencies=_protegido)
+app.include_router(admin.router, dependencies=_protegido)
 
 
 @app.get("/", include_in_schema=False)

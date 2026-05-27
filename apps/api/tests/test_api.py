@@ -10,6 +10,40 @@ def test_health(client):
     assert r.json()["status"] == "ok"
 
 
+def test_login_ok(client):
+    r = client.post("/api/auth/login", json={"email": "test@curifor.com", "password": "123456"})
+    assert r.status_code == 200
+    assert r.json()["token"]
+    assert r.json()["email"] == "test@curifor.com"
+
+
+def test_login_password_incorrecta(client):
+    r = client.post("/api/auth/login", json={"email": "test@curifor.com", "password": "mala"})
+    assert r.status_code == 401
+
+
+def test_login_usuario_inexistente(client):
+    r = client.post("/api/auth/login", json={"email": "noexiste@curifor.com", "password": "123456"})
+    assert r.status_code == 401
+
+
+def test_auth_token_roundtrip():
+    from src.services.auth import crear_token, verificar_token
+
+    t = crear_token("alguien@curifor.com")
+    assert verificar_token(t) == "alguien@curifor.com"
+    assert verificar_token("token.invalido") is None
+
+
+def test_endpoint_protegido_sin_token():
+    # Sin el override de auth, un endpoint de datos debe responder 401.
+    from fastapi.testclient import TestClient
+    from src.main import app
+
+    with TestClient(app) as c:
+        assert c.get("/api/sucursales").status_code == 401
+
+
 def test_listar_sugerido(client):
     r = client.get("/api/sugerido")
     assert r.status_code == 200

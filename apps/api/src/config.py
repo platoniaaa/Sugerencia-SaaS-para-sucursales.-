@@ -22,6 +22,12 @@ class Settings(BaseSettings):
     # Usuario admin placeholder (auth real llega despues).
     admin_email: str = "francisco@curifor.cl"
 
+    # --- Login ---
+    # Clave para firmar los tokens de sesion. DEBE configurarse en produccion
+    # (variable AUTH_SECRET en Render/Vercel). El default no es seguro.
+    auth_secret: str = "cambiar-en-produccion-AUTH_SECRET"
+    token_horas: int = 12  # duracion de la sesion
+
     # Origenes permitidos por CORS (separados por coma).
     cors_origins: str = "http://localhost:3000"
 

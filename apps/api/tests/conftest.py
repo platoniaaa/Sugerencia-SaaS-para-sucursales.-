@@ -7,7 +7,8 @@ from sqlalchemy.pool import StaticPool
 
 from src.db import Base, get_db
 from src.main import app
-from src.models import DimProducto, DimSucursal, Sugerido
+from src.models import DimProducto, DimSucursal, Sugerido, Usuario
+from src.services.auth import hash_password, requiere_auth
 
 
 @pytest.fixture()
@@ -30,6 +31,7 @@ def db_session():
 
 
 def _seed(session):
+    session.add(Usuario(email="test@curifor.com", password_hash=hash_password("123456"), nombre="Test"))
     session.add(DimSucursal(sucursal_id="LINDEROS", tenant_id="curifor", nombre="Linderos"))
     session.add(DimProducto(
         producto="20 BXO5W30AA", tenant_id="curifor", descripcion="ACEITE 5W30 LITRO FORD",
@@ -54,6 +56,8 @@ def client(db_session):
             pass
 
     app.dependency_overrides[get_db] = _override
+    # Bypass de autenticacion en los tests (los endpoints de datos estan protegidos).
+    app.dependency_overrides[requiere_auth] = lambda: "test@curifor.com"
     with TestClient(app) as c:
         yield c
     app.dependency_overrides.clear()
