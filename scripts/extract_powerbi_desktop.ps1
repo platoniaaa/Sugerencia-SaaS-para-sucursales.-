@@ -68,8 +68,12 @@ function Invoke-DaxToCsv($port, $catalog, $dax, $csvPath) {
     $cs = "Provider=MSOLAP;Data Source=localhost:$port;Initial Catalog=$catalog;"
     $conn = New-Object System.Data.OleDb.OleDbConnection($cs)
     $conn.Open()
-    $writer = New-Object System.IO.StreamWriter($csvPath, $false, (New-Object System.Text.UTF8Encoding $false))
+    # StreamWriter con buffer grande (1 MB): menos escrituras a disco en tablas grandes.
+    $writer = New-Object System.IO.StreamWriter($csvPath, $false, (New-Object System.Text.UTF8Encoding $false), 1048576)
     $count = 0
+    # Caracteres que obligan a entrecomillar un campo CSV.
+    $special = [char[]]@(',', '"', "`n", "`r")
+    $inv = [Globalization.CultureInfo]::InvariantCulture
     try {
         $cmd = $conn.CreateCommand()
         $cmd.CommandText = $dax
@@ -80,11 +84,32 @@ function Invoke-DaxToCsv($port, $catalog, $dax, $csvPath) {
         $headers = New-Object System.Collections.Generic.List[string]
         for ($i = 0; $i -lt $n; $i++) { $headers.Add((CsvEscape (CleanName $r.GetName($i)))) }
         $writer.WriteLine([string]::Join(",", $headers))
-        # Filas
-        $vals = New-Object string[] $n
+        # Filas: se arma cada linea con StringBuilder y escape inline (sin llamada a
+        # funcion por celda) y solo se entrecomilla cuando hace falta -> mucho mas rapido
+        # para tablas con cientos de miles de filas.
+        $vals = New-Object object[] $n
+        $sb = New-Object System.Text.StringBuilder 4096
         while ($r.Read()) {
-            for ($i = 0; $i -lt $n; $i++) { $vals[$i] = CsvEscape $r.GetValue($i) }
-            $writer.WriteLine([string]::Join(",", $vals))
+            [void]$r.GetValues($vals)
+            [void]$sb.Clear()
+            for ($i = 0; $i -lt $n; $i++) {
+                if ($i -gt 0) { [void]$sb.Append(',') }
+                $v = $vals[$i]
+                if ($null -eq $v -or $v -is [System.DBNull]) { continue }
+                if ($v -is [double] -or $v -is [decimal] -or $v -is [single]) {
+                    [void]$sb.Append($v.ToString($inv))
+                }
+                else {
+                    $s = [string]$v
+                    if ($s.IndexOfAny($special) -ge 0) {
+                        [void]$sb.Append('"').Append($s.Replace('"', '""')).Append('"')
+                    }
+                    else {
+                        [void]$sb.Append($s)
+                    }
+                }
+            }
+            $writer.WriteLine($sb.ToString())
             $count++
         }
         $r.Close()
