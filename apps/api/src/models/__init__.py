@@ -5,6 +5,7 @@ from .dim_producto import DimProducto
 from .dim_sucursal import DimSucursal
 from .usuario import Usuario
 from .venta_mensual import VentaMensual
+from .post_venta import PostVentaFila, PostVentaMeta
 
 __all__ = [
     "Sugerido",
@@ -13,4 +14,6 @@ __all__ = [
     "DimSucursal",
     "Usuario",
     "VentaMensual",
+    "PostVentaFila",
+    "PostVentaMeta",
 ]

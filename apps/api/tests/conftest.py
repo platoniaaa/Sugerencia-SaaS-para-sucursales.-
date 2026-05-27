@@ -1,4 +1,6 @@
 """Fixtures de pytest: base de datos SQLite en memoria + cliente de prueba con datos."""
+import json
+
 import pytest
 from fastapi.testclient import TestClient
 from sqlalchemy import create_engine
@@ -7,7 +9,15 @@ from sqlalchemy.pool import StaticPool
 
 from src.db import Base, get_db
 from src.main import app
-from src.models import DimProducto, DimSucursal, Sugerido, Usuario, VentaMensual
+from src.models import (
+    DimProducto,
+    DimSucursal,
+    PostVentaFila,
+    PostVentaMeta,
+    Sugerido,
+    Usuario,
+    VentaMensual,
+)
 from src.services.auth import hash_password, requiere_auth
 
 
@@ -49,6 +59,25 @@ def _seed(session):
             tenant_id="curifor", producto="20 BXO5W30AA", sucursal_id="LINDEROS",
             mes=mes, cantidad=cant,
         ))
+    # Post Venta: 3 filas (arreglo posicional) en 2 períodos / 2 sucursales.
+    cols = ["Periodo", "SUCURSAL", "Producto", "Total"]
+    pv = [
+        ["202601", "LINDEROS", "P1", "100"],
+        ["202601", "TALCA", "P2", "200"],
+        ["202602", "LINDEROS", "P3", "300"],
+    ]
+    for fila in pv:
+        session.add(PostVentaFila(
+            tenant_id="curifor", periodo=fila[0], sucursal=fila[1],
+            datos=json.dumps(fila, ensure_ascii=False),
+        ))
+    session.add(PostVentaMeta(
+        tenant_id="curifor",
+        columnas=json.dumps(cols),
+        filas=3,
+        periodos=json.dumps(["202601", "202602"]),
+        sucursales=json.dumps(["LINDEROS", "TALCA"]),
+    ))
     session.commit()
 
 

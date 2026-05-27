@@ -11,6 +11,8 @@ import type {
   SugeridoFiltros,
   SugeridoKpis,
   SugeridoPage,
+  PostVentaFiltros,
+  PostVentaMeta,
   VentasResponse,
 } from "./types";
 
@@ -224,6 +226,41 @@ export const api = {
       throw new Error(err.detail ?? "No se pudo leer Power BI Desktop");
     }
     return res.json();
+  },
+
+  async postVentaMeta(): Promise<PostVentaMeta> {
+    return getJSON("/api/post-venta/meta");
+  },
+
+  async postVentaContar(f: PostVentaFiltros): Promise<number> {
+    const p = new URLSearchParams();
+    if (f.periodo_desde) p.set("periodo_desde", f.periodo_desde);
+    if (f.periodo_hasta) p.set("periodo_hasta", f.periodo_hasta);
+    if (f.sucursal) p.set("sucursal", f.sucursal);
+    const r = await getJSON<{ filas: number }>(`/api/post-venta/contar?${p.toString()}`);
+    return r.filas;
+  },
+
+  async exportPostVenta(f: PostVentaFiltros): Promise<void> {
+    const res = await req("/api/post-venta/export-excel", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(f),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail ?? "No se pudo generar el Excel");
+    }
+    const blob = await res.blob();
+    const dispo = res.headers.get("Content-Disposition") ?? "";
+    const match = dispo.match(/filename="?([^"]+)"?/);
+    const nombre = match?.[1] ?? "planilla_post_venta.xlsx";
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = nombre;
+    a.click();
+    URL.revokeObjectURL(url);
   },
 
   async cargarSugerido(file: File): Promise<CargaResultado> {

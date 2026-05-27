@@ -9,6 +9,7 @@ import { estaAutenticado, getEmail, getNombre, logout } from "@/lib/auth";
 const NAV = [
   { href: "/", label: "Dashboard" },
   { href: "/compras", label: "Compras" },
+  { href: "/exportar", label: "Exportar" },
   { href: "/cargar", label: "Cargar datos" },
 ];
 

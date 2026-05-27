@@ -13,11 +13,12 @@ import json
 import os
 import pathlib
 import subprocess
+from datetime import date
 
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from . import excel_loader, ventas_loader
+from . import excel_loader, post_venta_loader, ventas_loader
 
 settings = get_settings()
 
@@ -25,7 +26,7 @@ settings = get_settings()
 _SCRIPT = pathlib.Path(__file__).resolve().parents[4] / "scripts" / "extract_powerbi_desktop.ps1"
 
 
-def _ejecutar_script(dax: str) -> dict:
+def _ejecutar_script(dax: str, timeout: int = 240) -> dict:
     if not _SCRIPT.exists():
         raise RuntimeError(f"No se encontro el script {_SCRIPT}")
     proc = subprocess.run(
@@ -42,7 +43,7 @@ def _ejecutar_script(dax: str) -> dict:
         capture_output=True,
         text=True,
         encoding="utf-8",  # el script emite UTF-8; evitar mojibake en acentos
-        timeout=240,
+        timeout=timeout,
     )
     out = (proc.stdout or "").strip()
     if not out:
@@ -76,6 +77,48 @@ def sync_desktop(db: Session, dax: str | None = None) -> dict:
             contenido = f.read()
         # Reutiliza el cargador de CSV (las cabeceras ya vienen limpias: Producto, SucursalID...).
         resultado = excel_loader.cargar_sugerido(db, "sugerido_powerbi.csv", contenido)
+    finally:
+        try:
+            os.remove(csv_path)
+        except OSError:
+            pass
+
+    resultado["origen"] = "powerbi-desktop"
+    resultado["filas_recibidas"] = int(data.get("rows") or 0)
+    return resultado
+
+
+def sync_post_venta_desktop(db: Session, dax: str | None = None) -> dict:
+    """Lee la 'Planilla Post Venta' (solo el AÑO EN CURSO) del Power BI abierto y la carga.
+
+    El filtro por período se arma dinámicamente (Periodo del modelo es entero YYYYMM):
+    trae solo desde enero del año actual, así el snapshot de la nube es liviano y siempre
+    es el año vigente. Se da más tiempo al extractor porque puede traer decenas de miles
+    de filas.
+    """
+    if dax is None:
+        tabla = settings.powerbi_post_venta_tabla
+        corte = date.today().year * 100 + 1  # ej. 202601
+        dax = f"EVALUATE FILTER('{tabla}', '{tabla}'[Periodo] >= {corte})"
+    data = _ejecutar_script(dax, timeout=900)
+
+    if not data.get("ok"):
+        error = data.get("error") or "No se pudo leer Power BI Desktop."
+        if "MSOLAP" in error:
+            error += (
+                " Falta el proveedor MSOLAP: instala DAX Studio o las 'Analysis Services "
+                "client libraries' de Microsoft (ver docs/powerbi-sync.md)."
+            )
+        raise RuntimeError(error)
+
+    csv_path = data.get("csv")
+    if not csv_path or not os.path.exists(csv_path):
+        raise RuntimeError("El script no generó el archivo de datos esperado.")
+
+    try:
+        with open(csv_path, "rb") as f:
+            contenido = f.read()
+        resultado = post_venta_loader.cargar_post_venta(db, "post_venta_powerbi.csv", contenido)
     finally:
         try:
             os.remove(csv_path)

@@ -186,6 +186,33 @@ def test_carros_export_excel(client):
     assert len(r.content) > 0
 
 
+def test_post_venta_meta(client):
+    r = client.get("/api/post-venta/meta")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["filas"] == 3
+    assert body["periodos"] == ["202601", "202602"]
+    assert "LINDEROS" in body["sucursales"]
+    assert body["columnas"] == ["Periodo", "SUCURSAL", "Producto", "Total"]
+
+
+def test_post_venta_contar_filtrado(client):
+    assert client.get("/api/post-venta/contar", params={"periodo_desde": "202601", "periodo_hasta": "202601"}).json()["filas"] == 2
+    assert client.get("/api/post-venta/contar", params={"sucursal": "LINDEROS"}).json()["filas"] == 2
+    assert client.get("/api/post-venta/contar", params={"periodo_desde": "202601", "periodo_hasta": "202601", "sucursal": "TALCA"}).json()["filas"] == 1
+
+
+def test_post_venta_export_excel(client):
+    r = client.post("/api/post-venta/export-excel", json={"sucursal": "LINDEROS"})
+    assert r.status_code == 200
+    assert "spreadsheetml" in r.headers["content-type"]
+    assert len(r.content) > 0
+
+
+def test_post_venta_export_sin_filas_404(client):
+    assert client.post("/api/post-venta/export-excel", json={"sucursal": "NOEXISTE"}).status_code == 404
+
+
 def test_powerbi_transformar_columnas():
     # Las claves "Tabla[Columna]" / "'Tabla'[Columna]" / "[Medida]" se reducen a la columna.
     from src.services.powerbi_loader import transformar

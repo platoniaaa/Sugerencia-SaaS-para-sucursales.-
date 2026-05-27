@@ -138,6 +138,20 @@ export interface CarrosResponse {
   total_unidades: number;
 }
 
+export interface PostVentaMeta {
+  columnas: string[];
+  filas: number;
+  periodos: string[];
+  sucursales: string[];
+  actualizado_en: string | null;
+}
+
+export interface PostVentaFiltros {
+  periodo_desde?: string | null;
+  periodo_hasta?: string | null;
+  sucursal?: string | null;
+}
+
 export interface CargaResultado {
   filas_cargadas: number;
   productos: number;

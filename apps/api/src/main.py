@@ -10,7 +10,16 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from .config import get_settings
 from .db import create_all
-from .routers import admin, auth, compras, health, productos, sugerencias_manuales, sugerido
+from .routers import (
+    admin,
+    auth,
+    compras,
+    health,
+    post_venta,
+    productos,
+    sugerencias_manuales,
+    sugerido,
+)
 from .services.auth import requiere_auth
 
 settings = get_settings()
@@ -53,6 +62,7 @@ app.include_router(sugerido.router, dependencies=_protegido)
 app.include_router(productos.router, dependencies=_protegido)
 app.include_router(sugerencias_manuales.router, dependencies=_protegido)
 app.include_router(compras.router, dependencies=_protegido)
+app.include_router(post_venta.router, dependencies=_protegido)
 app.include_router(admin.router, dependencies=_protegido)
 
 

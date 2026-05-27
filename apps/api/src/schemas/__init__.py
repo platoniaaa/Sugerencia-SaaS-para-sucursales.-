@@ -23,6 +23,7 @@ from .compras import (
     CarrosResponse,
     ExportCarrosRequest,
 )
+from .post_venta import PostVentaMetaOut, PostVentaFiltros
 
 __all__ = [
     "SugeridoRow",
@@ -45,4 +46,6 @@ __all__ = [
     "CarroProveedor",
     "CarrosResponse",
     "ExportCarrosRequest",
+    "PostVentaMetaOut",
+    "PostVentaFiltros",
 ]
