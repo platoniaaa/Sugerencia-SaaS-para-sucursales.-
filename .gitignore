@@ -43,3 +43,7 @@ test-results/
 skills/
 Captura de pantalla*.png
 *.pbix
+
+# --- Propiedad intelectual / logica de negocio (NO publicar en repo publico) ---
+docs/curifor-dax-medidas.csv
+docs/private/

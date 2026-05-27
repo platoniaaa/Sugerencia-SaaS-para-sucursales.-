@@ -90,6 +90,23 @@ def test_detalle_sugerido_404(client):
     assert client.get("/api/sugerido/NOEXISTE/LINDEROS").status_code == 404
 
 
+def test_ventas_12m(client):
+    r = client.get("/api/sugerido/20 BXO5W30AA/LINDEROS/ventas")
+    assert r.status_code == 200
+    body = r.json()
+    assert body["producto"] == "20 BXO5W30AA"
+    assert len(body["meses"]) == 3
+    assert body["meses"][0]["mes"] == "202503"  # orden ascendente
+    assert body["total"] == 35
+
+
+def test_ventas_12m_sin_datos(client):
+    # Producto sin ventas: responde 200 con lista vacia (no 404).
+    r = client.get("/api/sugerido/NOEXISTE/LINDEROS/ventas")
+    assert r.status_code == 200
+    assert r.json()["meses"] == []
+
+
 def test_export_excel(client):
     r = client.post("/api/sugerido/export-excel", json={"filtros": {"solo_pedir": True}})
     assert r.status_code == 200

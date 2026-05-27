@@ -17,7 +17,7 @@ import subprocess
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from . import excel_loader
+from . import excel_loader, ventas_loader
 
 settings = get_settings()
 
@@ -76,6 +76,39 @@ def sync_desktop(db: Session, dax: str | None = None) -> dict:
             contenido = f.read()
         # Reutiliza el cargador de CSV (las cabeceras ya vienen limpias: Producto, SucursalID...).
         resultado = excel_loader.cargar_sugerido(db, "sugerido_powerbi.csv", contenido)
+    finally:
+        try:
+            os.remove(csv_path)
+        except OSError:
+            pass
+
+    resultado["origen"] = "powerbi-desktop"
+    resultado["filas_recibidas"] = int(data.get("rows") or 0)
+    return resultado
+
+
+def sync_ventas_desktop(db: Session, dax: str | None = None) -> dict:
+    """Lee el histórico de ventas desde el Power BI Desktop abierto y reemplaza el snapshot."""
+    consulta = dax or settings.powerbi_ventas_dax
+    data = _ejecutar_script(consulta)
+
+    if not data.get("ok"):
+        error = data.get("error") or "No se pudo leer Power BI Desktop."
+        if "MSOLAP" in error:
+            error += (
+                " Falta el proveedor MSOLAP: instala DAX Studio o las 'Analysis Services "
+                "client libraries' de Microsoft (ver docs/powerbi-sync.md)."
+            )
+        raise RuntimeError(error)
+
+    csv_path = data.get("csv")
+    if not csv_path or not os.path.exists(csv_path):
+        raise RuntimeError("El script no generó el archivo de datos esperado.")
+
+    try:
+        with open(csv_path, "rb") as f:
+            contenido = f.read()
+        resultado = ventas_loader.cargar_ventas(db, "ventas_powerbi.csv", contenido)
     finally:
         try:
             os.remove(csv_path)

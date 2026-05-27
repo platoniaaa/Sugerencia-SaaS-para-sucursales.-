@@ -6,7 +6,7 @@ Solo se filtra/agrega lo que ya esta cargado en la tabla.
 from sqlalchemy import distinct, func, or_, select
 from sqlalchemy.orm import Session
 
-from ..models import Sugerido
+from ..models import Sugerido, VentaMensual
 from ..schemas import SugeridoFiltros
 
 # Columnas por las que se permite ordenar (whitelist para evitar inyeccion).
@@ -132,3 +132,35 @@ def detalle(db: Session, producto: str, sucursal_id: str) -> Sugerido | None:
         Sugerido.producto == producto, Sugerido.sucursal_id == sucursal_id
     )
     return db.scalars(stmt).first()
+
+
+def ventas_12m(db: Session, producto: str, sucursal_id: str | None = None) -> dict:
+    """Histórico de venta de un producto (últimos 12 meses) agregado por mes.
+
+    Si `sucursal_id` se entrega, filtra a esa sucursal; si no hay venta en esa
+    sucursal, cae al total del producto en todas las sucursales (útil cuando el
+    id de sucursal del sugerido no coincide con el de ventas).
+    """
+
+    def _consulta(suc: str | None) -> list[tuple[str, float]]:
+        stmt = select(
+            VentaMensual.mes,
+            func.coalesce(func.sum(VentaMensual.cantidad), 0).label("cantidad"),
+        ).where(VentaMensual.producto == producto)
+        if suc:
+            stmt = stmt.where(VentaMensual.sucursal_id == suc)
+        stmt = stmt.group_by(VentaMensual.mes).order_by(VentaMensual.mes.asc())
+        return [(m, float(c)) for m, c in db.execute(stmt).all()]
+
+    filas = _consulta(sucursal_id) if sucursal_id else _consulta(None)
+    if sucursal_id and not filas:
+        filas = _consulta(None)
+
+    # Quedarse con los últimos 12 meses (orden ascendente).
+    filas = filas[-12:]
+    return {
+        "producto": producto,
+        "sucursal_id": sucursal_id or "",
+        "meses": [{"mes": m, "cantidad": c} for m, c in filas],
+        "total": sum(c for _, c in filas),
+    }

@@ -11,6 +11,7 @@ from ..schemas import (
     SugeridoKpis,
     SugeridoPage,
     SugeridoRow,
+    VentasResponse,
 )
 from ..services import excel_export, sugerido_service
 
@@ -59,6 +60,12 @@ def agrupado(
         return sugerido_service.agrupado(db, f, por)
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e)) from e
+
+
+@router.get("/{producto}/{sucursal_id}/ventas", response_model=VentasResponse)
+def ventas(producto: str, sucursal_id: str, db: Session = Depends(get_db)):
+    """Histórico de venta del producto en la sucursal (últimos 12 meses)."""
+    return VentasResponse(**sugerido_service.ventas_12m(db, producto, sucursal_id))
 
 
 @router.get("/{producto}/{sucursal_id}", response_model=SugeridoRow)

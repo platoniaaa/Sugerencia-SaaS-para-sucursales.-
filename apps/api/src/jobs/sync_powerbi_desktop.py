@@ -27,18 +27,28 @@ def run() -> int:
     try:
         res = powerbi_desktop_loader.sync_desktop(db)
         print(
-            f"OK: {res['filas_cargadas']} filas cargadas "
+            f"OK sugerido: {res['filas_cargadas']} filas cargadas "
             f"({res.get('filas_recibidas', '?')} recibidas), "
             f"{res['productos']} productos, {res['sucursales']} sucursales."
         )
         for a in res.get("advertencias", []):
             print(f"  advertencia: {a}")
-        return 0
     except Exception as e:  # noqa: BLE001
-        print(f"ERROR: {e}", file=sys.stderr)
+        print(f"ERROR sugerido: {e}", file=sys.stderr)
         return 1
-    finally:
-        db.close()
+
+    # Ventas (histórico 12 meses). No es crítico: si falla, el sugerido ya quedó cargado.
+    try:
+        vres = powerbi_desktop_loader.sync_ventas_desktop(db)
+        print(
+            f"OK ventas: {vres['filas_cargadas']} filas cargadas "
+            f"({vres.get('filas_recibidas', '?')} recibidas)."
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"AVISO ventas (continuo igual): {e}", file=sys.stderr)
+
+    db.close()
+    return 0
 
 
 if __name__ == "__main__":

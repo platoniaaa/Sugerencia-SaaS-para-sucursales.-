@@ -7,7 +7,7 @@ from sqlalchemy.pool import StaticPool
 
 from src.db import Base, get_db
 from src.main import app
-from src.models import DimProducto, DimSucursal, Sugerido, Usuario
+from src.models import DimProducto, DimSucursal, Sugerido, Usuario, VentaMensual
 from src.services.auth import hash_password, requiere_auth
 
 
@@ -44,6 +44,11 @@ def _seed(session):
         pedir="Si", costo_unitario=5000, total_sugerido_suc=10, total_valor_sugerido_clp=50000,
         sugerido_traslado=4, sugerido_compra_neto=6, pedir_flag="Si",
     ))
+    for mes, cant in [("202503", 12), ("202504", 8), ("202505", 15)]:
+        session.add(VentaMensual(
+            tenant_id="curifor", producto="20 BXO5W30AA", sucursal_id="LINDEROS",
+            mes=mes, cantidad=cant,
+        ))
     session.commit()
 
 

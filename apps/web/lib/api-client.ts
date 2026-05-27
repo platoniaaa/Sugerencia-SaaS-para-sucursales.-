@@ -11,6 +11,7 @@ import type {
   SugeridoFiltros,
   SugeridoKpis,
   SugeridoPage,
+  VentasResponse,
 } from "./types";
 
 const BASE = process.env.NEXT_PUBLIC_API_URL ?? "http://localhost:8000";
@@ -130,6 +131,12 @@ export const api = {
   async detalle(producto: string, sucursalId: string) {
     return getJSON(
       `/api/sugerido/${encodeURIComponent(producto)}/${encodeURIComponent(sucursalId)}`
+    );
+  },
+
+  async ventas(producto: string, sucursalId: string): Promise<VentasResponse> {
+    return getJSON(
+      `/api/sugerido/${encodeURIComponent(producto)}/${encodeURIComponent(sucursalId)}/ventas`
     );
   },
 

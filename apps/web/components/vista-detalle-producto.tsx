@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { ModalSugerenciaManual } from "@/components/modal-sugerencia-manual";
 import { GraficoStock } from "@/components/grafico-stock";
 import { GraficoComposicion } from "@/components/grafico-composicion";
+import { GraficoVentas } from "@/components/grafico-ventas";
 import { api } from "@/lib/api-client";
 import { formatoCLP, formatoFechaHora, formatoNumero } from "@/lib/formato";
 import type { Sucursal, SugerenciaManual, SugeridoRow } from "@/lib/types";
@@ -194,6 +195,9 @@ export function VistaDetalleProducto({
           />
         </CardContent>
       </Card>
+
+      {/* Tendencia de venta (últimos 12 meses) */}
+      <GraficoVentas producto={d.producto} sucursalId={d.sucursal_id} />
 
       {reemplazos.length > 0 && (
         <Card>

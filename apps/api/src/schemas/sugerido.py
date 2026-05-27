@@ -72,6 +72,22 @@ class AgrupadoRow(BaseModel):
     n_productos: int = 0
 
 
+class VentaMes(BaseModel):
+    """Venta de un producto/sucursal en un mes (para la tendencia 12 meses)."""
+
+    mes: str  # YYYYMM
+    cantidad: float = 0
+
+
+class VentasResponse(BaseModel):
+    """Histórico de venta de un producto en una sucursal (últimos 12 meses)."""
+
+    producto: str
+    sucursal_id: str
+    meses: list[VentaMes] = Field(default_factory=list)
+    total: float = 0
+
+
 class SugeridoFiltros(BaseModel):
     """Filtros reutilizables del dashboard (usados por listado, KPIs y export)."""
 

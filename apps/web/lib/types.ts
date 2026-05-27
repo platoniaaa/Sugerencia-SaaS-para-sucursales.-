@@ -62,6 +62,18 @@ export interface AgrupadoRow {
 
 export type DimensionAgrupado = "sucursal" | "marca" | "proveedor";
 
+export interface VentaMes {
+  mes: string; // YYYYMM
+  cantidad: number;
+}
+
+export interface VentasResponse {
+  producto: string;
+  sucursal_id: string;
+  meses: VentaMes[];
+  total: number;
+}
+
 export interface SugeridoFiltros {
   q?: string;
   sucursales?: string[];
