@@ -57,6 +57,12 @@ def test_sugerido_filtro_abc(client):
     assert client.get("/api/sugerido", params={"abc": "C"}).json()["total"] == 0
 
 
+def test_filtro_solo_abastece_cd(client):
+    # El seed no tiene abastece_cd="Si": con el filtro no aparece; sin el filtro sí.
+    assert client.get("/api/sugerido").json()["total"] == 1
+    assert client.get("/api/sugerido", params={"solo_abastece_cd": True}).json()["total"] == 0
+
+
 def test_kpis(client):
     r = client.get("/api/sugerido/kpis")
     assert r.status_code == 200

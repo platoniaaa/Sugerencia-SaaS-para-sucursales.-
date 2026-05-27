@@ -32,7 +32,8 @@ export function FiltrosSugerido({ filtros, onChange, sucursales, marcas }: Props
     (filtros.abc?.length ?? 0) > 0 ||
     (filtros.filtro1?.length ?? 0) > 0 ||
     (filtros.tipo_origen?.length ?? 0) > 0 ||
-    filtros.solo_pedir === false;
+    filtros.solo_pedir === false ||
+    filtros.solo_abastece_cd === true;
 
   return (
     <div className="flex flex-wrap items-center gap-2 rounded-xl border border-slate-200 bg-white p-3 shadow-sm">
@@ -94,6 +95,19 @@ export function FiltrosSugerido({ filtros, onChange, sucursales, marcas }: Props
         Solo pedir = Si
       </label>
 
+      <label
+        className="flex h-9 cursor-pointer select-none items-center gap-2 rounded-md border border-slate-300 bg-white px-3 text-[13px] text-slate-700"
+        title="Muestra solo los productos que abastece el CD (Abastece CD = Si)"
+      >
+        <input
+          type="checkbox"
+          className="h-4 w-4 accent-brand"
+          checked={filtros.solo_abastece_cd ?? false}
+          onChange={(e) => set({ solo_abastece_cd: e.target.checked })}
+        />
+        Solo abastece CD
+      </label>
+
       {hayFiltros && (
         <button
           onClick={() =>
@@ -105,6 +119,7 @@ export function FiltrosSugerido({ filtros, onChange, sucursales, marcas }: Props
               filtro1: [],
               tipo_origen: [],
               solo_pedir: true,
+              solo_abastece_cd: false,
             })
           }
           className="flex h-9 items-center gap-1 rounded-md px-2 text-[13px] text-slate-500 hover:bg-slate-100 hover:text-slate-700"

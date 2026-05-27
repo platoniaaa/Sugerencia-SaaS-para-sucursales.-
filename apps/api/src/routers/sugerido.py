@@ -26,10 +26,12 @@ def _filtros(
     tipo_origen: list[str] = Query(default=[]),
     proveedor: str | None = Query(None),
     solo_pedir: bool = Query(True, description="Mostrar solo pedir=Si"),
+    solo_abastece_cd: bool = Query(False, description="Solo productos con Abastece CD=Si"),
 ) -> SugeridoFiltros:
     return SugeridoFiltros(
         q=q, sucursales=sucursal, abc=abc, filtro1=filtro1,
         tipo_origen=tipo_origen, proveedor=proveedor, solo_pedir=solo_pedir,
+        solo_abastece_cd=solo_abastece_cd,
     )
 
 

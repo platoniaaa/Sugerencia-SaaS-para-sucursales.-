@@ -30,6 +30,9 @@ def _apply_filters(stmt, f: SugeridoFiltros):
     if f.solo_pedir:
         # "pedir = Si" tolerante a may/min.
         stmt = stmt.where(func.lower(Sugerido.pedir) == "si")
+    if f.solo_abastece_cd:
+        # "Abastece CD = Si" tolerante a may/min y acento.
+        stmt = stmt.where(func.lower(Sugerido.abastece_cd).in_(("si", "sí")))
     return stmt
 
 
