@@ -6,6 +6,7 @@ import type { ColDef, GridReadyEvent, RowClickedEvent } from "ag-grid-community"
 import { COLUMNAS, type DefColumna } from "@/lib/columnas";
 import { formatoCLP, formatoNumero } from "@/lib/formato";
 import type { SugeridoRow } from "@/lib/types";
+import { FiltroMultiSelect } from "@/components/filtro-multiselect";
 
 interface Props {
   rows: SugeridoRow[];
@@ -38,7 +39,8 @@ function colDef(def: DefColumna): ColDef {
     pinned: def.pin,
     sortable: true,
     resizable: true,
-    filter: numerica ? "agNumberColumnFilter" : "agTextColumnFilter",
+    // Filtro custom multi-select (estilo Excel / D365) en TODAS las columnas — ver
+    // defaultColDef más abajo. Aquí no se sobreescribe.
     minWidth: def.tipo === "texto" ? 140 : 110,
     flex: def.key === "descripcion" ? 2 : undefined,
   };
@@ -75,7 +77,15 @@ export function TablaSugerido({ rows, columnasVisibles, onRowClick }: Props) {
   }, [columnasVisibles]);
 
   const defaultColDef = useMemo<ColDef>(
-    () => ({ sortable: true, resizable: true, suppressHeaderMenuButton: false }),
+    () => ({
+      sortable: true,
+      resizable: true,
+      suppressHeaderMenuButton: false,
+      filter: FiltroMultiSelect,
+      // Solo la pestaña de filtro (sin las otras del menú por defecto) → al clickear
+      // el icono se abre directo el multiselect.
+      menuTabs: ["filterMenuTab"],
+    }),
     []
   );
 
