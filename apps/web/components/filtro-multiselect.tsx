@@ -38,10 +38,10 @@ function toStr(v: unknown): string {
 export function FiltroMultiSelect(props: CustomFilterProps) {
   const { model, onModelChange, getValue, api, colDef } = props;
 
-  // Valores únicos de la columna — se calculan SINCRÓNICAMENTE al montar el
-  // componente (lazy initializer de useState). Antes lo hacía en useEffect y, si
-  // el usuario pegaba muy rápido, allValues todavía estaba vacío.
-  const [allValues] = useState<string[]>(() => {
+  // Función para calcular los valores únicos de la columna. Se llama tanto al
+  // montar (para la lista completa) como dentro de handlePaste (para garantizar
+  // que el matching siempre tenga datos frescos del grid, sin depender del estado).
+  const calcularDistintos = useCallback((): string[] => {
     const vals = new Set<string>();
     api.forEachNode((node: IRowNode) => {
       vals.add(toStr(getValue(node)));
@@ -49,7 +49,9 @@ export function FiltroMultiSelect(props: CustomFilterProps) {
     return Array.from(vals).sort((a, b) =>
       a.localeCompare(b, "es", { numeric: true })
     );
-  });
+  }, [api, getValue]);
+
+  const [allValues, setAllValues] = useState<string[]>(() => calcularDistintos());
 
   // Estado UI local (lo que el usuario está editando, NO el modelo aplicado).
   const [seleccion, setSeleccion] = useState<Set<string>>(
@@ -124,8 +126,15 @@ export function FiltroMultiSelect(props: CustomFilterProps) {
     }
     if (vals.length < 2) return;
 
+    // SIEMPRE recalculamos los valores frescos del grid (no confiamos en el state,
+    // por si al primer render el grid no habia terminado de poblarse).
+    const valoresFrescos = calcularDistintos();
+    if (valoresFrescos.length > allValues.length) {
+      setAllValues(valoresFrescos);
+    }
+
     // Indice case-insensitive para buscar rapido
-    const allLower = allValues.map((v) => v.toLowerCase());
+    const allLower = valoresFrescos.map((v) => v.toLowerCase());
     const matched = new Set<string>();
     let exactos = 0;
     let expandidos = 0;
@@ -135,19 +144,19 @@ export function FiltroMultiSelect(props: CustomFilterProps) {
       // 1. Exacto (case-insensitive)
       const iEx = allLower.indexOf(norm);
       if (iEx !== -1) {
-        matched.add(allValues[iEx]);
+        matched.add(valoresFrescos[iEx]);
         exactos++;
         continue;
       }
       // 2. Prefijo
-      const prefijo = allValues.filter((_, i) => allLower[i].startsWith(norm));
+      const prefijo = valoresFrescos.filter((_, i) => allLower[i].startsWith(norm));
       if (prefijo.length > 0) {
         prefijo.forEach((m) => matched.add(m));
         expandidos++;
         continue;
       }
       // 3. Contiene (ultimo recurso)
-      const contiene = allValues.filter((_, i) => allLower[i].includes(norm));
+      const contiene = valoresFrescos.filter((_, i) => allLower[i].includes(norm));
       if (contiene.length > 0) {
         contiene.forEach((m) => matched.add(m));
         expandidos++;
