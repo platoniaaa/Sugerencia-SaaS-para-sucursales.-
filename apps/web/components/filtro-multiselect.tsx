@@ -9,22 +9,29 @@ import {
 } from "react";
 import { useGridFilter } from "ag-grid-react";
 import type {
+  GridApi,
   IDoesFilterPassParams,
-  IFilterParams,
   IRowNode,
 } from "ag-grid-community";
 
-/** Filtro multi-select tipo Excel / D365 para AG Grid Community v32.
+/** Filtro multi-select tipo Excel / D365 para AG Grid React v32 Community.
  *
- * - Buscador arriba: si escribes texto, filtra los checkboxes visibles;
- *   si PEGAS una lista (con saltos de línea, tabs, ; o varias comas), la
- *   usa como conjunto exacto de valores a filtrar.
- * - Lista de valores únicos de la columna con (Seleccionar todo).
- * - Aplica al apretar ACEPTAR y cierra el popup.
+ * Patrón oficial v32: el `model` lo administra AG Grid (llega como prop +
+ * se cambia con `onModelChange`), y `useGridFilter` solo registra
+ * `doesFilterPass`. AG Grid maneja isFilterActive / getModel / setModel
+ * automáticamente a partir de eso.
  */
 
 interface FilterModel {
   values: string[];
+}
+
+interface CustomFilterProps {
+  model: FilterModel | null;
+  onModelChange: (model: FilterModel | null) => void;
+  getValue: (node: IRowNode) => unknown;
+  api: GridApi;
+  colDef: { headerName?: string };
 }
 
 const VISIBLE_LIMIT = 500;
@@ -34,89 +41,48 @@ function toStr(v: unknown): string {
   return String(v);
 }
 
-export function FiltroMultiSelect(props: IFilterParams) {
-  const { api, filterChangedCallback, colDef, column } = props;
+export function FiltroMultiSelect(props: CustomFilterProps) {
+  const { model, onModelChange, getValue, api, colDef } = props;
 
-  const obtenerValor = useCallback(
-    (node: IRowNode): unknown => {
-      // AG Grid v32 usa `valueGetter`; algunas builds tambien tienen `getValue`.
-      // Si no hay ninguna, caemos al data crudo por field.
-      const p = props as unknown as Record<string, unknown>;
-      const fn =
-        (p.getValue as ((n: IRowNode) => unknown) | undefined) ??
-        (p.valueGetter as ((n: IRowNode) => unknown) | undefined);
-      if (fn) return fn(node);
-      const field = column?.getColId?.() ?? (colDef?.field as string | undefined);
-      if (field && node.data) return (node.data as Record<string, unknown>)[field];
-      return undefined;
-    },
-    [colDef, column, props]
+  // Estado UI local (lo que el usuario está editando, NO el modelo aplicado).
+  const [seleccion, setSeleccion] = useState<Set<string>>(
+    () => new Set(model?.values ?? [])
   );
-
-  // Estado "oficial" del filtro (refs estables que leen los callbacks).
-  const selRef = useRef<Set<string>>(new Set());
-  const activoRef = useRef(false);
-  const valuesRef = useRef<string[]>([]);
-
-  // Estado de la UI.
   const [busqueda, setBusqueda] = useState("");
   const [allValues, setAllValues] = useState<string[]>([]);
-  const [seleccion, setSeleccion] = useState<Set<string>>(new Set());
   const [listaPegada, setListaPegada] = useState<string[] | null>(null);
+  const inicializadoRef = useRef(false);
 
-  // ----- Callbacks para AG Grid (registrados via useGridFilter) -----
-  const isFilterActive = useCallback(() => activoRef.current, []);
-
+  // doesFilterPass lee `model` (lo gestiona AG Grid). useGridFilter registra
+  // el callback; AG Grid lo re-evalúa cuando cambia `model`.
   const doesFilterPass = useCallback(
     (params: IDoesFilterPassParams) => {
-      const v = toStr(obtenerValor(params.node));
-      return selRef.current.has(v);
+      if (!model || !model.values || model.values.length === 0) return true;
+      const v = toStr(getValue(params.node));
+      return model.values.includes(v);
     },
-    [obtenerValor]
+    [model, getValue]
   );
 
-  const getModel = useCallback(
-    () => (activoRef.current ? { values: Array.from(selRef.current) } : null),
-    []
-  );
+  useGridFilter({ doesFilterPass });
 
-  const setModel = useCallback((model: FilterModel | null) => {
-    if (!model || !model.values) {
-      activoRef.current = false;
-      selRef.current = new Set();
-    } else {
-      activoRef.current = true;
-      selRef.current = new Set(model.values);
-    }
-    setSeleccion(new Set(selRef.current));
-  }, []);
-
-  // El hook recomendado en AG Grid React v32 para registrar el filtro custom.
-  useGridFilter({
-    isFilterActive,
-    doesFilterPass,
-    getModel,
-    setModel,
-  });
-
-  // ----- Inicializar la lista de valores al montar -----
+  // Calcular valores distintos al montar.
   useEffect(() => {
+    if (inicializadoRef.current) return;
+    inicializadoRef.current = true;
     const vals = new Set<string>();
     api.forEachNode((node: IRowNode) => {
-      vals.add(toStr(obtenerValor(node)));
+      vals.add(toStr(getValue(node)));
     });
     const arr = Array.from(vals).sort((a, b) =>
       a.localeCompare(b, "es", { numeric: true })
     );
-    valuesRef.current = arr;
     setAllValues(arr);
-    setSeleccion(
-      activoRef.current ? new Set(selRef.current) : new Set(arr)
-    );
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, []);
+    // Si no hay filtro aplicado, todos seleccionados por defecto.
+    if (!model) setSeleccion(new Set(arr));
+  }, [api, getValue, model]);
 
-  // ----- Lista visible y toggles -----
+  // ----- Lista visible -----
   const visible = useMemo(() => {
     if (listaPegada) return listaPegada;
     const q = busqueda.trim().toLowerCase();
@@ -173,40 +139,46 @@ export function FiltroMultiSelect(props: IFilterParams) {
   const volverListaCompleta = () => {
     setListaPegada(null);
     setBusqueda("");
-    setSeleccion(new Set(valuesRef.current));
+    setSeleccion(new Set(allValues));
   };
 
-  // ----- Cerrar el popup despues de aplicar -----
+  // Cierra el popup. Probamos varias formas porque la API cambia entre versiones.
   const cerrarPopup = () => {
-    const a = api as unknown as { hidePopupMenu?: () => void };
-    a.hidePopupMenu?.();
+    try {
+      const a = api as unknown as { hidePopupMenu?: () => void };
+      a.hidePopupMenu?.();
+    } catch {
+      // ignore
+    }
+    // Fallback: ESC para cerrar
+    try {
+      document.dispatchEvent(
+        new KeyboardEvent("keydown", { key: "Escape", bubbles: true })
+      );
+    } catch {
+      // ignore
+    }
   };
 
-  // ----- Aplicar / limpiar -----
+  // ----- Aplicar / limpiar (cambian el modelo via onModelChange) -----
   const aplicar = () => {
-    const total = valuesRef.current.length;
     const allSelected =
-      total > 0 &&
-      seleccion.size >= total &&
-      valuesRef.current.every((v) => seleccion.has(v));
+      allValues.length > 0 &&
+      seleccion.size >= allValues.length &&
+      allValues.every((v) => seleccion.has(v));
     if (allSelected || seleccion.size === 0) {
-      activoRef.current = false;
-      selRef.current = new Set();
+      onModelChange(null); // sin filtro
     } else {
-      activoRef.current = true;
-      selRef.current = new Set(seleccion);
+      onModelChange({ values: Array.from(seleccion) });
     }
-    filterChangedCallback();
     cerrarPopup();
   };
 
   const limpiar = () => {
-    activoRef.current = false;
-    selRef.current = new Set();
-    setSeleccion(new Set(valuesRef.current));
+    onModelChange(null);
+    setSeleccion(new Set(allValues));
     setBusqueda("");
     setListaPegada(null);
-    filterChangedCallback();
     cerrarPopup();
   };
 
