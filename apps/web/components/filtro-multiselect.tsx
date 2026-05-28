@@ -51,6 +51,12 @@ export function FiltroMultiSelect(props: CustomFilterProps) {
   const [busqueda, setBusqueda] = useState("");
   const [allValues, setAllValues] = useState<string[]>([]);
   const [listaPegada, setListaPegada] = useState<string[] | null>(null);
+  const [pegadoInfo, setPegadoInfo] = useState<{
+    total: number;
+    exactos: number;
+    expandidos: number;
+    sinMatch: string[];
+  } | null>(null);
   const inicializadoRef = useRef(false);
 
   // doesFilterPass lee `model` (lo gestiona AG Grid). useGridFilter registra
@@ -110,6 +116,9 @@ export function FiltroMultiSelect(props: CustomFilterProps) {
   };
 
   // ----- Pegado de lista -----
+  // Si un valor pegado no calza EXACTO con un valor real de la columna, lo busca
+  // por PREFIJO (ej. pegan "19 HL3Z8005" -> incluye "19 HL3Z8005B" y "19 HL3Z8005C").
+  // Asi el filtro tolera que el BI muestre los codigos truncados.
   const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
     const text = e.clipboardData.getData("text");
     const tieneMultiples = /[\n\t;]/.test(text) || text.split(",").length > 3;
@@ -124,20 +133,70 @@ export function FiltroMultiSelect(props: CustomFilterProps) {
         vals.push(s);
       }
     }
-    if (vals.length > 1) {
-      setListaPegada(vals);
-      setSeleccion(new Set(vals));
-      setBusqueda("");
+    if (vals.length < 2) return;
+
+    // Indice case-insensitive para buscar rapido
+    const allLower = allValues.map((v) => v.toLowerCase());
+    const matched = new Set<string>();
+    let exactos = 0;
+    let expandidos = 0;
+    const sinMatch: string[] = [];
+    for (const v of vals) {
+      const norm = v.toLowerCase();
+      // 1. Exacto (case-insensitive)
+      const iEx = allLower.indexOf(norm);
+      if (iEx !== -1) {
+        matched.add(allValues[iEx]);
+        exactos++;
+        continue;
+      }
+      // 2. Prefijo
+      const prefijo = allValues.filter((_, i) => allLower[i].startsWith(norm));
+      if (prefijo.length > 0) {
+        prefijo.forEach((m) => matched.add(m));
+        expandidos++;
+        continue;
+      }
+      // 3. Contiene (ultimo recurso)
+      const contiene = allValues.filter((_, i) => allLower[i].includes(norm));
+      if (contiene.length > 0) {
+        contiene.forEach((m) => matched.add(m));
+        expandidos++;
+        continue;
+      }
+      sinMatch.push(v);
     }
+
+    if (matched.size === 0) {
+      // Nada calzo. Igualmente activamos el modo "lista pegada" con los literales
+      // para que el usuario vea que no hubo match.
+      setListaPegada(vals);
+      setSeleccion(new Set());
+      setPegadoInfo({ total: vals.length, exactos: 0, expandidos: 0, sinMatch: vals });
+      setBusqueda("");
+      return;
+    }
+
+    const ordenados = Array.from(matched).sort((a, b) =>
+      a.localeCompare(b, "es", { numeric: true })
+    );
+    setListaPegada(ordenados);
+    setSeleccion(matched);
+    setBusqueda("");
+    setPegadoInfo({ total: vals.length, exactos, expandidos, sinMatch });
   };
 
   const onBuscarChange = (txt: string) => {
     setBusqueda(txt);
-    if (listaPegada && txt !== "") setListaPegada(null);
+    if (listaPegada && txt !== "") {
+      setListaPegada(null);
+      setPegadoInfo(null);
+    }
   };
 
   const volverListaCompleta = () => {
     setListaPegada(null);
+    setPegadoInfo(null);
     setBusqueda("");
     setSeleccion(new Set(allValues));
   };
@@ -200,17 +259,32 @@ export function FiltroMultiSelect(props: CustomFilterProps) {
       />
 
       {listaPegada && (
-        <div className="mb-1 flex items-center justify-between rounded bg-brand-50 px-2 py-1 text-[12px] text-brand">
-          <span>
-            Lista pegada: <b>{listaPegada.length}</b> valores
-          </span>
-          <button
-            type="button"
-            onClick={volverListaCompleta}
-            className="hover:underline"
-          >
-            Ver lista completa
-          </button>
+        <div className="mb-1 rounded bg-brand-50 px-2 py-1 text-[12px] text-brand">
+          <div className="flex items-center justify-between">
+            <span>
+              Lista pegada: <b>{listaPegada.length}</b> valores
+            </span>
+            <button
+              type="button"
+              onClick={volverListaCompleta}
+              className="hover:underline"
+            >
+              Ver lista completa
+            </button>
+          </div>
+          {pegadoInfo && (
+            <p className="mt-0.5 text-[11px] text-slate-600">
+              {pegadoInfo.total} pegado{pegadoInfo.total === 1 ? "" : "s"}
+              {pegadoInfo.exactos > 0 && ` · ${pegadoInfo.exactos} exacto${pegadoInfo.exactos === 1 ? "" : "s"}`}
+              {pegadoInfo.expandidos > 0 && ` · ${pegadoInfo.expandidos} expandido${pegadoInfo.expandidos === 1 ? "" : "s"} por coincidencia parcial`}
+              {pegadoInfo.sinMatch.length > 0 && (
+                <span className="text-amber-700">
+                  {" "}
+                  · {pegadoInfo.sinMatch.length} sin coincidencia
+                </span>
+              )}
+            </p>
+          )}
         </div>
       )}
 
