@@ -70,7 +70,8 @@ ADDCOLUMNS(
 
     # Consulta DAX para extraer el histórico de ventas (últimos 12 períodos) de la
     # tabla 'Ventas Unificadas'. Devuelve Producto, SUCURSAL, Periodo (YYYYMM) y la
-    # suma de Cantidad. Se usa para la tendencia de venta en la vista de detalle.
+    # suma de CantidadAjustada (NETA: ya descuenta devoluciones y anulaciones).
+    # Es la misma columna que usa el BI de abastecimiento para los "consumos".
     powerbi_ventas_dax: str = """
 DEFINE
   VAR Ult12 =
@@ -81,7 +82,7 @@ SUMMARIZECOLUMNS(
   'Ventas Unificadas'[SUCURSAL],
   'Ventas Unificadas'[Periodo],
   TREATAS(Ult12, 'Ventas Unificadas'[Periodo]),
-  "cantidad", SUM('Ventas Unificadas'[Cantidad])
+  "cantidad", SUM('Ventas Unificadas'[CantidadAjustada])
 )
 """.strip()
 
