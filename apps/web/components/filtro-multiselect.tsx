@@ -60,6 +60,9 @@ export const FiltroMultiSelect = forwardRef<unknown, IFilterParams>(
     const [busqueda, setBusqueda] = useState("");
     const [allValues, setAllValues] = useState<string[]>([]);
     const [seleccion, setSeleccion] = useState<Set<string>>(new Set());
+    // Cuando el usuario pega una columna, la lista visible pasa a ser exactamente
+    // esos valores (no se acota a los 500 primeros). null = lista completa.
+    const [listaPegada, setListaPegada] = useState<string[] | null>(null);
     const [, bump] = useState(0);
 
     const computeDistinct = (): string[] => {
@@ -120,12 +123,14 @@ export const FiltroMultiSelect = forwardRef<unknown, IFilterParams>(
     );
 
     const visible = useMemo(() => {
+      if (listaPegada) return listaPegada;
       const q = busqueda.trim().toLowerCase();
       if (!q) return allValues;
       return allValues.filter((v) => v.toLowerCase().includes(q));
-    }, [allValues, busqueda]);
+    }, [allValues, busqueda, listaPegada]);
 
-    const visibleCap = visible.slice(0, VISIBLE_LIMIT);
+    // En modo "lista pegada" no acotamos: el usuario quiere verlos todos con scroll.
+    const visibleCap = listaPegada ? visible : visible.slice(0, VISIBLE_LIMIT);
     const allVisibleChecked =
       visibleCap.length > 0 && visibleCap.every((v) => seleccion.has(v));
     const someVisibleChecked = visibleCap.some((v) => seleccion.has(v));
@@ -144,20 +149,40 @@ export const FiltroMultiSelect = forwardRef<unknown, IFilterParams>(
       setSeleccion(next);
     };
 
-    // Pegar una columna del Excel → reemplaza la selección por esos valores exactos.
+    // Pegar una columna del Excel → la lista visible pasa a ser exactamente esos
+    // valores, todos seleccionados. El usuario puede destildar individualmente.
     const handlePaste = (e: React.ClipboardEvent<HTMLInputElement>) => {
       const text = e.clipboardData.getData("text");
       const tieneMultiples = /[\n\t;]/.test(text) || text.split(",").length > 3;
       if (!tieneMultiples) return;
       e.preventDefault();
-      const vals = text
-        .split(/[\n\t;,]+/)
-        .map((s) => s.trim())
-        .filter(Boolean);
+      // Deduplicar preservando orden de pegado.
+      const seen = new Set<string>();
+      const vals: string[] = [];
+      for (const raw of text.split(/[\n\t;,]+/)) {
+        const s = raw.trim();
+        if (s && !seen.has(s)) {
+          seen.add(s);
+          vals.push(s);
+        }
+      }
       if (vals.length > 1) {
+        setListaPegada(vals);
         setSeleccion(new Set(vals));
         setBusqueda("");
       }
+    };
+
+    // Si el usuario escribe en el buscador, salimos del modo "lista pegada".
+    const onBuscarChange = (txt: string) => {
+      setBusqueda(txt);
+      if (listaPegada && txt !== "") setListaPegada(null);
+    };
+
+    const volverListaCompleta = () => {
+      setListaPegada(null);
+      setBusqueda("");
+      setSeleccion(new Set(valuesRef.current));
     };
 
     const aplicar = () => {
@@ -181,6 +206,7 @@ export const FiltroMultiSelect = forwardRef<unknown, IFilterParams>(
       selRef.current = new Set();
       setSeleccion(new Set(valuesRef.current));
       setBusqueda("");
+      setListaPegada(null);
       filterChangedCallback();
     };
 
@@ -195,10 +221,25 @@ export const FiltroMultiSelect = forwardRef<unknown, IFilterParams>(
           type="text"
           placeholder={`Buscar en ${titulo}… (o pega una lista)`}
           value={busqueda}
-          onChange={(e) => setBusqueda(e.target.value)}
+          onChange={(e) => onBuscarChange(e.target.value)}
           onPaste={handlePaste}
           className="mb-2 w-full rounded border border-slate-300 px-2 py-1.5 text-sm focus:border-brand focus:outline-none focus:ring-1 focus:ring-brand"
         />
+
+        {listaPegada && (
+          <div className="mb-1 flex items-center justify-between rounded bg-brand-50 px-2 py-1 text-[12px] text-brand">
+            <span>
+              Lista pegada: <b>{listaPegada.length}</b> valores
+            </span>
+            <button
+              type="button"
+              onClick={volverListaCompleta}
+              className="hover:underline"
+            >
+              Ver lista completa
+            </button>
+          </div>
+        )}
 
         <label className="flex cursor-pointer select-none items-center gap-2 border-b border-slate-100 px-1 py-1.5 text-[13px] font-medium text-slate-800">
           <input
