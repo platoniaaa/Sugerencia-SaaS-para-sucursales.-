@@ -215,7 +215,10 @@ export const FiltroMultiSelect = forwardRef<unknown, IFilterParams>(
     return (
       <div
         className="flex w-80 flex-col bg-white p-2 text-sm text-slate-800"
-        style={{ maxHeight: "min(70vh, 480px)" }}
+        // 360px asegura que entre arriba del header del grid sin que el buscador
+        // quede tapado por el header sticky de la pagina (~80px) ni la barra
+        // de filtros encima. min con 55vh respeta pantallas chicas.
+        style={{ maxHeight: "min(55vh, 360px)" }}
         onMouseDown={(e) => e.stopPropagation()}
       >
         <input
