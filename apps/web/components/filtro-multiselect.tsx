@@ -2,6 +2,7 @@
 
 import {
   forwardRef,
+  useEffect,
   useImperativeHandle,
   useMemo,
   useRef,
@@ -36,7 +37,19 @@ function toStr(v: unknown): string {
 
 export const FiltroMultiSelect = forwardRef<unknown, IFilterParams>(
   function FiltroMultiSelect(props, ref) {
-    const { api, getValue, filterChangedCallback, colDef } = props;
+    const { api, filterChangedCallback, colDef, column } = props;
+
+    // AG Grid v32 usa `valueGetter` en IFilterParams; algunas versiones también
+    // exponen `getValue`. Probamos ambos y caemos al data crudo si no hay ninguno.
+    const obtenerValor = (node: IRowNode): unknown => {
+      const p = props as unknown as Record<string, unknown>;
+      const fn = (p.getValue as ((n: IRowNode) => unknown) | undefined)
+        ?? (p.valueGetter as ((n: IRowNode) => unknown) | undefined);
+      if (fn) return fn(node);
+      const field = column?.getColId?.() ?? (colDef?.field as string | undefined);
+      if (field && node.data) return (node.data as Record<string, unknown>)[field];
+      return undefined;
+    };
 
     // Estado "oficial" del filtro (lo que AG Grid usa para doesFilterPass).
     const selRef = useRef<Set<string>>(new Set());
@@ -52,19 +65,30 @@ export const FiltroMultiSelect = forwardRef<unknown, IFilterParams>(
     const computeDistinct = (): string[] => {
       const vals = new Set<string>();
       api.forEachNode((node: IRowNode) => {
-        vals.add(toStr(getValue(node)));
+        vals.add(toStr(obtenerValor(node)));
       });
       return Array.from(vals).sort((a, b) =>
         a.localeCompare(b, "es", { numeric: true })
       );
     };
 
+    // Al montar el componente (que AG Grid hace la PRIMERA vez que se abre el
+    // filtro para esta columna), poblar la lista de valores. Si AG Grid llama
+    // ademas a afterGuiAttached, se vuelve a refrescar.
+    useEffect(() => {
+      const distinct = computeDistinct();
+      valuesRef.current = distinct;
+      setAllValues(distinct);
+      setSeleccion(activoRef.current ? new Set(selRef.current) : new Set(distinct));
+      // eslint-disable-next-line react-hooks/exhaustive-deps
+    }, []);
+
     useImperativeHandle(
       ref,
       () => ({
         isFilterActive: () => activoRef.current,
         doesFilterPass: (params: IDoesFilterPassParams) => {
-          const v = toStr(getValue(params.node));
+          const v = toStr(obtenerValor(params.node));
           return selRef.current.has(v);
         },
         getModel: () =>
