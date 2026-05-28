@@ -128,9 +128,30 @@ export function FiltroMultiSelect(props: CustomFilterProps) {
 
     // SIEMPRE recalculamos los valores frescos del grid (no confiamos en el state,
     // por si al primer render el grid no habia terminado de poblarse).
-    const valoresFrescos = calcularDistintos();
+    let valoresFrescos = calcularDistintos();
+    // Si api.forEachNode no devolvio nada, intentar via rowModel.
+    if (valoresFrescos.length <= 1) {
+      const model = (api as unknown as { getDisplayedRowCount?: () => number; getDisplayedRowAtIndex?: (i: number) => IRowNode | null });
+      const n = model.getDisplayedRowCount?.() ?? 0;
+      if (n > 0 && model.getDisplayedRowAtIndex) {
+        const s = new Set<string>();
+        for (let i = 0; i < n; i++) {
+          const node = model.getDisplayedRowAtIndex(i);
+          if (node) s.add(toStr(getValue(node)));
+        }
+        valoresFrescos = Array.from(s).sort((a, b) => a.localeCompare(b, "es", { numeric: true }));
+      }
+    }
     if (valoresFrescos.length > allValues.length) {
       setAllValues(valoresFrescos);
+    }
+    // Marcador de debug que el test puede leer.
+    if (typeof window !== "undefined") {
+      (window as unknown as { __filtroDebug?: object }).__filtroDebug = {
+        allValuesLength: allValues.length,
+        valoresFrescosLength: valoresFrescos.length,
+        primeros5: valoresFrescos.slice(0, 5),
+      };
     }
 
     // Indice case-insensitive para buscar rapido
