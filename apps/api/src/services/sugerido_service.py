@@ -126,6 +126,8 @@ def listar(
         like = f"%{f.q.strip()}%"
         # Anti-join con subquery: evita pasar 15k parametros como un .in_().
         productos_sugerido_sub = select(distinct(Sugerido.producto)).scalar_subquery()
+        # Tope conservador: Render free tiene CPU/timeout limitado y Pydantic
+        # valida cada fila. Con 200 filas el endpoint responde rapido.
         cat_stmt = (
             select(ProductoCatalogo)
             .where(
@@ -136,7 +138,7 @@ def listar(
             )
             .where(~ProductoCatalogo.producto.in_(productos_sugerido_sub))
             .order_by(ProductoCatalogo.producto.asc())
-            .limit(500)
+            .limit(200)
         )
         try:
             catalogo_items = list(db.scalars(cat_stmt).all())
