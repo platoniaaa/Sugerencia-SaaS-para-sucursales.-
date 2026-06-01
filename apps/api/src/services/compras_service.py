@@ -9,7 +9,7 @@ from __future__ import annotations
 from sqlalchemy import func, select
 from sqlalchemy.orm import Session
 
-from ..models import Sugerido, SugerenciaManual
+from ..models import ProductoCatalogo, Sugerido, SugerenciaManual
 from ..schemas import CarroProveedor, CarrosResponse, LineaCarro, SugeridoFiltros
 from .sugerido_service import _apply_filters
 
@@ -76,6 +76,50 @@ def carros_por_proveedor(db: Session, f: SugeridoFiltros) -> CarrosResponse:
                 subtotal_clp=subtotal,
             )
         )
+
+    # Manuales-puras: pares (producto, sucursal) que tienen sugerencia manual vigente
+    # pero NO existen en el sugerido del BI. Se agrupan bajo "Sin proveedor asignado"
+    # con el costo del catalogo si esta disponible. Solo aplica cuando no hay filtros
+    # de proveedor/marca/tipo_origen (en esos casos el comprador esta acotando).
+    if not (f.proveedor or f.filtro1 or f.tipo_origen or f.abc):
+        productos_sug = set(db.scalars(select(Sugerido.producto).distinct()).all())
+        manual_rows = db.execute(
+            select(
+                SugerenciaManual.producto,
+                func.sum(SugerenciaManual.unidades).label("manual"),
+            )
+            .where(SugerenciaManual.archivada.is_(False))
+            .group_by(SugerenciaManual.producto)
+            .having(func.sum(SugerenciaManual.unidades) > 0)
+        ).all()
+        manual_solas = [(p, int(m)) for p, m in manual_rows if p not in productos_sug]
+        if manual_solas:
+            cat_map = {
+                c.producto: c
+                for c in db.scalars(
+                    select(ProductoCatalogo).where(
+                        ProductoCatalogo.producto.in_({p for p, _ in manual_solas})
+                    )
+                ).all()
+            }
+            proveedor_etq = "Sin proveedor asignado"
+            carro_sp = carros.get(proveedor_etq) or CarroProveedor(
+                proveedor=proveedor_etq, lineas=[]
+            )
+            carros[proveedor_etq] = carro_sp
+            for prod, cantidad in manual_solas:
+                cat = cat_map.get(prod)
+                costo = float(cat.costo) if cat and cat.costo else None
+                carro_sp.lineas.append(
+                    LineaCarro(
+                        producto=prod,
+                        descripcion=cat.glosa if cat else None,
+                        clasificacion_abc=None,
+                        cantidad=float(cantidad),
+                        costo_unitario=costo,
+                        subtotal_clp=float(cantidad) * (costo or 0),
+                    )
+                )
 
     # Totales y orden.
     lista: list[CarroProveedor] = []

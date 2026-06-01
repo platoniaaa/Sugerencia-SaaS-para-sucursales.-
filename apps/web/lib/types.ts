@@ -2,7 +2,7 @@
 
 export interface SugeridoRow {
   id: number;
-  origen?: "sugerido" | "catalogo";
+  origen?: "sugerido" | "catalogo" | "manual";
   producto: string;
   descripcion: string | null;
   sucursal_id: string;

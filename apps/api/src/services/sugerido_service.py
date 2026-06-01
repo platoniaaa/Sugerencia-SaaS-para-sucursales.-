@@ -8,7 +8,7 @@ import math
 from sqlalchemy import distinct, func, or_, select
 from sqlalchemy.orm import Session
 
-from ..models import ProductoCatalogo, Sugerido, VentaMensual
+from ..models import ProductoCatalogo, Sugerido, SugerenciaManual, VentaMensual
 from ..schemas import SugeridoFiltros
 from . import stock_service
 
@@ -106,6 +106,65 @@ def _row_desde_catalogo(c: ProductoCatalogo) -> dict:
     }
 
 
+def _manuales_por_par(db: Session, q: str | None = None) -> dict[tuple[str, str], int]:
+    """Devuelve {(producto, sucursal_id): unidades vigentes} de sugerencias manuales.
+
+    Si se pasa q, solo trae los productos cuyo codigo lo contiene (acota al caso de busqueda).
+    """
+    stmt = (
+        select(
+            SugerenciaManual.producto,
+            SugerenciaManual.sucursal_id,
+            func.sum(SugerenciaManual.unidades).label("total"),
+        )
+        .where(SugerenciaManual.archivada.is_(False))
+        .group_by(SugerenciaManual.producto, SugerenciaManual.sucursal_id)
+    )
+    if q:
+        stmt = stmt.where(SugerenciaManual.producto.ilike(f"%{q}%"))
+    return {
+        (p, s): int(t or 0) for p, s, t in db.execute(stmt).all() if t and int(t) > 0
+    }
+
+
+def _fila_sintetica_manual(
+    producto: str, sucursal_id: str, unidades: int, cat: ProductoCatalogo | None
+) -> dict:
+    """Fila para un par (producto, sucursal) que tiene sugerencia manual pero NO esta en el
+    sugerido del BI. Se enriquece con los datos del catalogo si estan disponibles."""
+    return {
+        "id": -abs(hash((producto, sucursal_id))) % (10**9),
+        "origen": "manual",
+        "producto": producto,
+        "descripcion": cat.glosa if cat else None,
+        "sucursal_id": sucursal_id,
+        "nombre_sucursal": sucursal_id,
+        "clasificacion_abc": None,
+        "proveedor": None,
+        "filtro1_final": None,
+        "tipo_origen": cat.procedencia if cat else None,
+        "es_importado": None,
+        "unidad_medida": cat.unidad if cat else None,
+        "lead_time_dias": None, "lt_efectivo": None, "lt_cd_a_sucursal_dias": None,
+        "lt_origen": None, "abastece_cd": None, "prioridad_cd": None,
+        "comprar_en_el_cd": None, "tiene_stock_cd": None,
+        "demanda_mensual": None, "demanda_diaria": None, "desv_std_mensual": None,
+        "stock_seguridad": None, "punto_de_pedido": None,
+        "costo_unitario": cat.costo if cat else None,
+        "pedir": "Si",
+        "reemplazos": cat.reemplazo if cat else None,
+        "sugerido_suc": None, "stock_activo_suc": None,
+        "stock_en_transito_suc": None, "stock_en_cd": None,
+        "sugerido_traslado": None,
+        "sugerido_compra_neto": float(unidades),
+        "total_sugerido_suc": float(unidades),
+        "total_valor_sugerido_clp": (
+            float(unidades) * float(cat.costo) if cat and cat.costo else None
+        ),
+        "pedir_flag": "Si",
+    }
+
+
 def listar(
     db: Session, f: SugeridoFiltros, page: int = 1, limit: int = 50, sort: str | None = None
 ) -> tuple[list[dict], int]:
@@ -114,41 +173,74 @@ def listar(
 
     stmt = _apply_sort(base, sort).offset((page - 1) * limit).limit(limit)
     sugeridos = list(db.scalars(stmt).all())
-    # Mapeo a dict para uniformidad con catalogo
+
+    # Trae las manuales VIGENTES por par. Cuando hay busqueda acotamos al texto;
+    # cuando no, traemos todas (el sugerido del BI ya esta paginado, son pocas).
+    q_text = (f.q or "").strip() or None
+    manuales = _manuales_por_par(db, q_text)
+
+    # Mapeo a dict + suma de manuales para los pares ya presentes en sugerido.
     items: list[dict] = []
+    pares_en_sugerido: set[tuple[str, str]] = set()
     for s in sugeridos:
         d = {c.name: getattr(s, c.name) for c in Sugerido.__table__.columns}
         d["origen"] = "sugerido"
+        par = (s.producto, s.sucursal_id)
+        pares_en_sugerido.add(par)
+        manual = manuales.get(par, 0)
+        if manual:
+            base_total = float(d.get("total_sugerido_suc") or 0)
+            d["total_sugerido_suc"] = base_total + manual
+            base_compra = float(d.get("sugerido_compra_neto") or d.get("total_sugerido_suc") or 0)
+            d["sugerido_compra_neto"] = base_compra + manual
+            if d.get("costo_unitario"):
+                d["total_valor_sugerido_clp"] = (
+                    float(d.get("total_valor_sugerido_clp") or 0)
+                    + manual * float(d["costo_unitario"])
+                )
+            d["pedir"] = "Si"
+            d["pedir_flag"] = "Si"
         items.append(d)
 
-    # Si hay búsqueda, agregamos productos del catálogo maestro que no estén en
-    # el sugerido (con campos del sugerido vacíos). Se ignoran los filtros del
-    # sugerido (solo_pedir, abastece_cd, etc.) — un texto en el buscador siempre
-    # trae lo del catálogo para no esconderlo.
+    # Filas sinteticas para pares (producto, sucursal) que estan SOLO en manuales
+    # (no estan en sugerido del BI). Solo cuando hay busqueda, para no inflar la
+    # vista por defecto.
+    total_manuales_solas = 0
+    if q_text:
+        manuales_solas = [
+            (p, s, u) for (p, s), u in manuales.items() if (p, s) not in pares_en_sugerido
+        ]
+        if manuales_solas:
+            productos_m = {p for p, _, _ in manuales_solas}
+            cat_map = {
+                c.producto: c
+                for c in db.scalars(
+                    select(ProductoCatalogo).where(ProductoCatalogo.producto.in_(productos_m))
+                ).all()
+            }
+            for p, s, u in manuales_solas:
+                items.append(_fila_sintetica_manual(p, s, u, cat_map.get(p)))
+            total_manuales_solas = len(manuales_solas)
+
+    # Catalogo (productos que no estan ni en sugerido ni con manuales): solo cuando hay busqueda.
     total_cat = 0
-    if f.q and f.q.strip():
-        like = f"%{f.q.strip()}%"
-        # Anti-join con subquery: evita pasar 15k parametros como un .in_().
+    if q_text:
+        like = f"%{q_text}%"
         productos_sugerido_sub = select(distinct(Sugerido.producto)).scalar_subquery()
-        # Tope conservador: Render free tiene CPU/timeout limitado y Pydantic
-        # valida cada fila. Con 200 filas el endpoint responde rapido.
         cat_stmt = (
             select(ProductoCatalogo)
-            .where(
-                or_(
-                    ProductoCatalogo.producto.ilike(like),
-                    ProductoCatalogo.glosa.ilike(like),
-                )
-            )
+            .where(or_(ProductoCatalogo.producto.ilike(like), ProductoCatalogo.glosa.ilike(like)))
             .where(~ProductoCatalogo.producto.in_(productos_sugerido_sub))
             .order_by(ProductoCatalogo.producto.asc())
             .limit(200)
         )
         try:
             catalogo_items = list(db.scalars(cat_stmt).all())
+            # Omitir productos que ya aparecieron como filas sinteticas manuales.
+            productos_manuales = {p for (p, _) in manuales.keys()}
+            catalogo_items = [c for c in catalogo_items if c.producto not in productos_manuales]
             total_cat = len(catalogo_items)
             rows_cat = [_row_desde_catalogo(c) for c in catalogo_items]
-            # Stock actualizado del BI: sobreescribe el stock estatico del CSV maestro.
             stock_map = stock_service.stock_total_por_producto(
                 db, [r["producto"] for r in rows_cat]
             )
@@ -157,11 +249,9 @@ def listar(
                     r["stock_activo_suc"] = stock_map[r["producto"]]
             items.extend(rows_cat)
         except Exception:
-            # Si la tabla producto_catalogo aun no existe o falla la query, no
-            # debemos romper la pagina principal del dashboard.
             total_cat = 0
 
-    return items, total + total_cat
+    return items, total + total_manuales_solas + total_cat
 
 
 def kpis(db: Session, f: SugeridoFiltros) -> dict:

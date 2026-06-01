@@ -17,13 +17,16 @@ interface Props {
 
 function ProductoCelda(p: { value: unknown; data?: SugeridoRow }) {
   const v = (p.value as string | null) ?? "";
-  if (p.data?.origen !== "catalogo") return <>{v}</>;
+  const origen = p.data?.origen;
+  if (origen !== "catalogo" && origen !== "manual") return <>{v}</>;
+  const cls =
+    origen === "manual"
+      ? "rounded bg-emerald-50 px-1.5 py-px text-[10px] font-semibold text-emerald-700"
+      : "rounded bg-slate-100 px-1.5 py-px text-[10px] font-semibold text-slate-500";
   return (
     <span className="inline-flex items-center gap-1.5">
       <span>{v}</span>
-      <span className="rounded bg-slate-100 px-1.5 py-px text-[10px] font-semibold text-slate-500">
-        CATÁLOGO
-      </span>
+      <span className={cls}>{origen === "manual" ? "MANUAL" : "CATÁLOGO"}</span>
     </span>
   );
 }
@@ -132,8 +135,8 @@ export function TablaSugerido({ rows, columnasVisibles, onRowClick }: Props) {
         onGridReady={onGridReady}
         onRowClicked={(e: RowClickedEvent<SugeridoRow>) => {
           if (!e.data) return;
-          // Filas del catalogo van a su propia pagina (no tienen sucursal).
-          if (e.data.origen === "catalogo") {
+          // Manual-pura: producto sin sugerido del BI. Lo mandamos al detalle del catalogo.
+          if (e.data.origen === "catalogo" || e.data.origen === "manual") {
             router.push(`/catalogo/${encodeURIComponent(e.data.producto)}`);
             return;
           }
