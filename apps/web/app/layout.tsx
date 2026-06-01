@@ -9,7 +9,6 @@ const fraunces = Fraunces({
   weight: ["400", "500", "600", "700"],
   variable: "--font-display",
   display: "swap",
-  axes: ["opsz", "SOFT"],
 });
 
 // Sans con personalidad para UI, mas geometrico que Inter neutro.
