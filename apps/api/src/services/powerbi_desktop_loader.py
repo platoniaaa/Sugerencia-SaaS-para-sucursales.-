@@ -18,7 +18,7 @@ from datetime import date
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from . import excel_loader, post_venta_loader, ventas_loader
+from . import excel_loader, post_venta_loader, stock_loader, ventas_loader
 
 settings = get_settings()
 
@@ -119,6 +119,38 @@ def sync_post_venta_desktop(db: Session, dax: str | None = None) -> dict:
         with open(csv_path, "rb") as f:
             contenido = f.read()
         resultado = post_venta_loader.cargar_post_venta(db, "post_venta_powerbi.csv", contenido)
+    finally:
+        try:
+            os.remove(csv_path)
+        except OSError:
+            pass
+
+    resultado["origen"] = "powerbi-desktop"
+    resultado["filas_recibidas"] = int(data.get("rows") or 0)
+    return resultado
+
+
+def sync_stock_desktop(db: Session, dax: str | None = None) -> dict:
+    """Lee la tabla 'Stock Unificado' del Power BI abierto y reemplaza el snapshot.
+
+    Trae 1 fila por (producto, bodega, origen). El snapshot es chico (~30k filas)
+    así que se reemplaza completo en cada push.
+    """
+    consulta = dax or "EVALUATE 'Stock Unificado'"
+    data = _ejecutar_script(consulta, timeout=300)
+
+    if not data.get("ok"):
+        error = data.get("error") or "No se pudo leer Power BI Desktop."
+        raise RuntimeError(error)
+
+    csv_path = data.get("csv")
+    if not csv_path or not os.path.exists(csv_path):
+        raise RuntimeError("El script no genero el archivo de datos esperado.")
+
+    try:
+        with open(csv_path, "rb") as f:
+            contenido = f.read()
+        resultado = stock_loader.cargar_stock(db, "stock_powerbi.csv", contenido)
     finally:
         try:
             os.remove(csv_path)

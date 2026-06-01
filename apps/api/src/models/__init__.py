@@ -8,6 +8,7 @@ from .usuario import Usuario
 from .venta_mensual import VentaMensual
 from .post_venta import PostVentaFila, PostVentaMeta
 from .producto_catalogo import ProductoCatalogo
+from .stock_unificado import StockUnificado
 
 __all__ = [
     "Sugerido",
@@ -20,4 +21,5 @@ __all__ = [
     "PostVentaFila",
     "PostVentaMeta",
     "ProductoCatalogo",
+    "StockUnificado",
 ]

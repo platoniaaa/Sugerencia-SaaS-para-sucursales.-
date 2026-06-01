@@ -6,6 +6,7 @@ from sqlalchemy.orm import Session
 
 from ..config import get_settings
 from ..models import ProductoCatalogo
+from . import stock_service
 
 settings = get_settings()
 
@@ -46,7 +47,33 @@ def listar(db: Session, f, page: int = 1, limit: int = 100, sort: str | None = N
     total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
     stmt = _apply_sort(base, sort).offset((page - 1) * limit).limit(limit)
     items = list(db.scalars(stmt).all())
-    return items, total
+    # Enriquecer cada fila con el stock real del BI (sumado entre sucursales).
+    # El stock del CSV maestro es un snapshot estatico de cuando se subio.
+    stock_map = stock_service.stock_total_por_producto(db, [p.producto for p in items])
+    salida = []
+    for p in items:
+        d = {c.name: getattr(p, c.name) for c in ProductoCatalogo.__table__.columns}
+        if p.producto in stock_map:
+            d["stock_total"] = stock_map[p.producto]
+        salida.append(d)
+    return salida, total
+
+
+def detalle(db: Session, producto: str) -> dict | None:
+    """Devuelve los datos del catálogo + desglose de stock por sucursal/bodega."""
+    p = db.scalars(
+        select(ProductoCatalogo).where(
+            ProductoCatalogo.tenant_id == settings.default_tenant_id,
+            ProductoCatalogo.producto == producto,
+        )
+    ).first()
+    if not p:
+        return None
+    d = {c.name: getattr(p, c.name) for c in ProductoCatalogo.__table__.columns}
+    desglose = stock_service.stock_por_sucursal(db, producto)
+    d["stock_total"] = sum(r["stock"] for r in desglose) if desglose else d.get("stock_total")
+    d["stock_por_sucursal"] = desglose
+    return d
 
 
 def opciones_filtros(db: Session) -> dict:

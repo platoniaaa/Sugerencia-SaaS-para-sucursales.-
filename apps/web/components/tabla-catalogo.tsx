@@ -1,8 +1,9 @@
 "use client";
 
 import { useMemo, useRef } from "react";
+import { useRouter } from "next/navigation";
 import { AgGridReact } from "ag-grid-react";
-import type { ColDef, GridReadyEvent } from "ag-grid-community";
+import type { ColDef, GridReadyEvent, RowClickedEvent } from "ag-grid-community";
 import { COLUMNAS_CAT, type DefColCat } from "@/lib/columnas-catalogo";
 import { formatoCLP, formatoNumero } from "@/lib/formato";
 import type { CatalogoRow } from "@/lib/types";
@@ -52,6 +53,7 @@ function colDef(def: DefColCat): ColDef {
 
 export function TablaCatalogo({ rows, columnasVisibles }: Props) {
   const gridRef = useRef<AgGridReact<CatalogoRow>>(null);
+  const router = useRouter();
 
   const columnDefs = useMemo<ColDef[]>(
     () => COLUMNAS_CAT.filter((c) => columnasVisibles.includes(c.key as string)).map(colDef),
@@ -87,6 +89,10 @@ export function TablaCatalogo({ rows, columnasVisibles }: Props) {
         defaultColDef={defaultColDef}
         popupParent={popupParent}
         onGridReady={onGridReady}
+        onRowClicked={(e: RowClickedEvent<CatalogoRow>) => {
+          if (e.data) router.push(`/catalogo/${encodeURIComponent(e.data.producto)}`);
+        }}
+        rowClass="cursor-pointer"
         pagination
         paginationPageSize={50}
         paginationPageSizeSelector={[50, 100, 200, 500]}

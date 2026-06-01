@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useRef } from "react";
+import { useRouter } from "next/navigation";
 import { AgGridReact } from "ag-grid-react";
 import type { ColDef, GridReadyEvent, RowClickedEvent } from "ag-grid-community";
 import { COLUMNAS, type DefColumna } from "@/lib/columnas";
@@ -81,6 +82,7 @@ function colDef(def: DefColumna): ColDef {
 
 export function TablaSugerido({ rows, columnasVisibles, onRowClick }: Props) {
   const gridRef = useRef<AgGridReact<SugeridoRow>>(null);
+  const router = useRouter();
 
   const columnDefs = useMemo<ColDef[]>(() => {
     // Mantener el orden definido en COLUMNAS, solo las visibles.
@@ -121,13 +123,15 @@ export function TablaSugerido({ rows, columnasVisibles, onRowClick }: Props) {
         popupParent={popupParent}
         onGridReady={onGridReady}
         onRowClicked={(e: RowClickedEvent<SugeridoRow>) => {
-          // Los rows del catalogo no tienen sucursal -> no se puede ir al detalle.
-          if (!e.data || e.data.origen === "catalogo") return;
+          if (!e.data) return;
+          // Filas del catalogo van a su propia pagina (no tienen sucursal).
+          if (e.data.origen === "catalogo") {
+            router.push(`/catalogo/${encodeURIComponent(e.data.producto)}`);
+            return;
+          }
           onRowClick(e.data);
         }}
-        getRowClass={(p) =>
-          p.data?.origen === "catalogo" ? "bg-slate-50/60" : "cursor-pointer"
-        }
+        getRowClass={() => "cursor-pointer"}
         pagination
         paginationPageSize={50}
         paginationPageSizeSelector={[50, 100, 200, 500]}

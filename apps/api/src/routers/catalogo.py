@@ -1,9 +1,9 @@
 """Endpoints del catálogo maestro (~400k productos)."""
-from fastapi import APIRouter, Depends, Query
+from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy.orm import Session
 
 from ..db import get_db
-from ..schemas import CatalogoFiltros, CatalogoPage, CatalogoRow
+from ..schemas import CatalogoDetalle, CatalogoFiltros, CatalogoPage, CatalogoRow
 from ..services import catalogo_service
 
 router = APIRouter(prefix="/api/catalogo", tags=["catalogo"])
@@ -44,3 +44,12 @@ def listar(
 def filtros_disponibles(db: Session = Depends(get_db)) -> dict:
     """Devuelve listas únicas de familia/procedencia/categoría para los dropdowns."""
     return catalogo_service.opciones_filtros(db)
+
+
+@router.get("/{producto:path}", response_model=CatalogoDetalle)
+def detalle(producto: str, db: Session = Depends(get_db)):
+    """Datos del catálogo del producto + desglose de stock por sucursal/bodega."""
+    d = catalogo_service.detalle(db, producto)
+    if not d:
+        raise HTTPException(status_code=404, detail="Producto no esta en el catalogo")
+    return CatalogoDetalle.model_validate(d)

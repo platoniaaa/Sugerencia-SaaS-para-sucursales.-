@@ -4,6 +4,7 @@ import type {
   AgrupadoRow,
   CargaResultado,
   CarrosResponse,
+  CatalogoDetalle,
   CatalogoFiltros,
   CatalogoOpciones,
   CatalogoPage,
@@ -174,6 +175,10 @@ export const api = {
 
   async catalogoFiltros(): Promise<CatalogoOpciones> {
     return getJSON("/api/catalogo/filtros");
+  },
+
+  async catalogoDetalle(producto: string): Promise<CatalogoDetalle> {
+    return getJSON(`/api/catalogo/${encodeURIComponent(producto)}`);
   },
 
   async sugerenciasManuales(producto?: string, sucursalId?: string): Promise<SugerenciaManual[]> {

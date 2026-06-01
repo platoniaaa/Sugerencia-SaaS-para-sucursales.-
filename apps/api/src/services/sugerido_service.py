@@ -8,6 +8,7 @@ from sqlalchemy.orm import Session
 
 from ..models import ProductoCatalogo, Sugerido, VentaMensual
 from ..schemas import SugeridoFiltros
+from . import stock_service
 
 # Columnas por las que se permite ordenar (whitelist para evitar inyeccion).
 SORTABLE = {c.name for c in Sugerido.__table__.columns}
@@ -143,7 +144,15 @@ def listar(
         try:
             catalogo_items = list(db.scalars(cat_stmt).all())
             total_cat = len(catalogo_items)
-            items.extend(_row_desde_catalogo(c) for c in catalogo_items)
+            rows_cat = [_row_desde_catalogo(c) for c in catalogo_items]
+            # Stock actualizado del BI: sobreescribe el stock estatico del CSV maestro.
+            stock_map = stock_service.stock_total_por_producto(
+                db, [r["producto"] for r in rows_cat]
+            )
+            for r in rows_cat:
+                if r["producto"] in stock_map:
+                    r["stock_activo_suc"] = stock_map[r["producto"]]
+            items.extend(rows_cat)
         except Exception:
             # Si la tabla producto_catalogo aun no existe o falla la query, no
             # debemos romper la pagina principal del dashboard.

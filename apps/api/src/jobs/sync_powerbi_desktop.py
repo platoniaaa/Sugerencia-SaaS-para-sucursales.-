@@ -47,6 +47,16 @@ def run() -> int:
     except Exception as e:  # noqa: BLE001
         print(f"AVISO ventas (continuo igual): {e}", file=sys.stderr)
 
+    # Stock Unificado (snapshot por producto-bodega). No es crítico.
+    try:
+        sres = powerbi_desktop_loader.sync_stock_desktop(db)
+        print(
+            f"OK stock: {sres['filas_cargadas']} filas cargadas "
+            f"({sres.get('filas_recibidas', '?')} recibidas)."
+        )
+    except Exception as e:  # noqa: BLE001
+        print(f"AVISO stock (continuo igual): {e}", file=sys.stderr)
+
     # Planilla Post Venta (solo año en curso, para exportar desde la web). No es crítico.
     try:
         pres = powerbi_desktop_loader.sync_post_venta_desktop(db)

@@ -48,3 +48,18 @@ class CatalogoFiltros(BaseModel):
     procedencia: list[str] = Field(default_factory=list)
     categoria: list[str] = Field(default_factory=list)
     con_stock: bool = False
+
+
+class StockSucursalRow(BaseModel):
+    """Desglose de stock en una sucursal/bodega (tabla Stock Unificado del BI)."""
+
+    bodega: str | None = None
+    sucursal_id: str | None = None
+    stock: float = 0
+    origen: str | None = None
+
+
+class CatalogoDetalle(CatalogoRow):
+    """Detalle del producto del catálogo + desglose de stock por sucursal."""
+
+    stock_por_sucursal: list[StockSucursalRow] = Field(default_factory=list)

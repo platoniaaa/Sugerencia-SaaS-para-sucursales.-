@@ -19,7 +19,13 @@ from .sugerencia_manual import (
     RecurrenteOut,
 )
 from .catalogo import ProductoOut, ProductoPage, SucursalOut
-from .producto_catalogo import CatalogoRow, CatalogoPage, CatalogoFiltros
+from .producto_catalogo import (
+    CatalogoRow,
+    CatalogoPage,
+    CatalogoFiltros,
+    CatalogoDetalle,
+    StockSucursalRow,
+)
 from .compras import (
     LineaCarro,
     CarroProveedor,
@@ -50,6 +56,8 @@ __all__ = [
     "CatalogoRow",
     "CatalogoPage",
     "CatalogoFiltros",
+    "CatalogoDetalle",
+    "StockSucursalRow",
     "LineaCarro",
     "CarroProveedor",
     "CarrosResponse",

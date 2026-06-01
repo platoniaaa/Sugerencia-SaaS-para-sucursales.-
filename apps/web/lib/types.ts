@@ -212,6 +212,17 @@ export interface CatalogoOpciones {
   categorias: string[];
 }
 
+export interface StockSucursalRow {
+  bodega: string | null;
+  sucursal_id: string | null;
+  stock: number;
+  origen: string | null;
+}
+
+export interface CatalogoDetalle extends CatalogoRow {
+  stock_por_sucursal: StockSucursalRow[];
+}
+
 export interface PostVentaMeta {
   columnas: string[];
   filas: number;
