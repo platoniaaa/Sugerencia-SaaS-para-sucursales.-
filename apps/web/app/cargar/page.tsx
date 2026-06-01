@@ -9,6 +9,7 @@ import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api-client";
 import { getEsAdmin } from "@/lib/auth";
 import { formatoNumero } from "@/lib/formato";
+import { SincronizacionManual } from "@/components/sincronizacion-manual";
 import type { CargaResultado } from "@/lib/types";
 
 export default function CargarPage() {
@@ -133,23 +134,11 @@ export default function CargarPage() {
               <br />
               Power BI Desktop debe estar abierto con el modelo del sugerido a esa hora.
             </p>
-            <div className="mt-4 rounded-sm border border-accent-700/20 bg-white p-3">
-              <p className="kicker">Sincronización manual</p>
-              <p className="mt-1.5 mb-3 text-[12.5px]">
-                Forzá una actualización inmediata desde el PC del admin. Power BI Desktop
-                debe estar abierto.
-              </p>
-              <a
-                href="sugerido://sync"
-                className="inline-flex items-center gap-2 rounded-sm bg-ink-900 px-4 py-2 text-[13px] font-semibold uppercase tracking-wider text-paper transition-colors hover:bg-accent-700"
-              >
-                <RefreshCw size={14} /> Sincronizar ahora
-              </a>
-              <p className="mt-2 text-[11px] text-ink-500">
-                Solo funciona en el PC del administrador (donde está Power BI). El navegador
-                pedirá permiso la primera vez para abrir &ldquo;Sugerido Curifor&rdquo;.
-              </p>
-            </div>
+            <SincronizacionManual />
+            <p className="mt-3 text-[11px] text-ink-500">
+              Solo funciona en el PC del administrador (donde está Power BI). El navegador
+              pedirá permiso la primera vez para abrir &ldquo;Sugerido Curifor&rdquo;.
+            </p>
             <p className="mt-3 text-[11.5px] text-ink-500">
               Logs de cada ejecución en{" "}
               <code className="font-mono">logs/sincronizar_diario.log</code> del PC del admin.

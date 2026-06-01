@@ -15,7 +15,7 @@ import sys
 
 from ..config import get_settings
 from ..db import SessionLocal, create_all
-from ..services import powerbi_desktop_loader
+from ..services import auditoria_service, powerbi_desktop_loader
 
 
 def run() -> int:
@@ -67,6 +67,18 @@ def run() -> int:
         )
     except Exception as e:  # noqa: BLE001
         print(f"AVISO post-venta (continuo igual): {e}", file=sys.stderr)
+
+    # Registrar el evento de sincronizacion en auditoria_log para que la web
+    # pueda mostrar "Ultima sync: hace X min".
+    try:
+        auditoria_service.registrar(
+            db, accion="powerbi_sincronizado", entidad="sistema",
+            usuario_email="push_to_cloud",
+            detalle=f"Sincronizacion desde Power BI Desktop completada en {destino}",
+        )
+        db.commit()
+    except Exception as e:  # noqa: BLE001
+        print(f"AVISO no se pudo registrar en auditoria: {e}", file=sys.stderr)
 
     db.close()
     return 0

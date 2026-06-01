@@ -336,6 +336,10 @@ export const api = {
     );
   },
 
+  async ultimaSincronizacion(): Promise<{ creado_en: string | null; detalle: string | null }> {
+    return getJSON("/api/ultima-sincronizacion");
+  },
+
   async marcarLeidas(ids?: string[]): Promise<{ actualizadas: number }> {
     const res = await req("/api/notificaciones/marcar-leidas", {
       method: "POST",

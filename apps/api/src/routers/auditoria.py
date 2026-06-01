@@ -1,8 +1,11 @@
 """Endpoints de auditoria (log de acciones) y notificaciones in-app."""
 from fastapi import APIRouter, Depends, Query
+from sqlalchemy import desc, select
 from sqlalchemy.orm import Session
 
+from ..config import get_settings
 from ..db import get_db
+from ..models import AuditoriaLog
 from ..schemas import (
     AuditoriaLogOut,
     AuditoriaPage,
@@ -14,6 +17,24 @@ from ..services import auditoria_service
 from ..services.auth import requiere_auth
 
 router = APIRouter(tags=["auditoria"])
+settings = get_settings()
+
+
+@router.get("/api/ultima-sincronizacion")
+def ultima_sync(db: Session = Depends(get_db)):
+    """Devuelve el timestamp de la ultima carga desde Power BI Desktop."""
+    log = db.scalars(
+        select(AuditoriaLog)
+        .where(
+            AuditoriaLog.tenant_id == settings.default_tenant_id,
+            AuditoriaLog.accion == "powerbi_sincronizado",
+        )
+        .order_by(desc(AuditoriaLog.creado_en))
+        .limit(1)
+    ).first()
+    if not log:
+        return {"creado_en": None, "detalle": None}
+    return {"creado_en": log.creado_en, "detalle": log.detalle}
 
 
 @router.get("/api/auditoria", response_model=AuditoriaPage)
