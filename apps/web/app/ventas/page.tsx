@@ -5,16 +5,18 @@ import {
   AlertTriangle,
   ArrowDown,
   ArrowUp,
+  BarChart3,
+  Columns3,
   Download,
-  FileSpreadsheet,
+  LayoutList,
+  RefreshCw,
+  Search,
 } from "lucide-react";
 import {
   Bar,
   BarChart,
   CartesianGrid,
   Legend,
-  Line,
-  LineChart,
   ResponsiveContainer,
   Tooltip,
   XAxis,
@@ -24,10 +26,13 @@ import { api } from "@/lib/api-client";
 import { formatoCLP, formatoCLPCorto, formatoFechaHora, formatoNumero } from "@/lib/formato";
 import type {
   PostVentaMeta,
+  VentaLinea,
   VentasKpis,
   VentasMes,
   VentasPorSucursal,
 } from "@/lib/types";
+import { TablaVentas } from "@/components/tabla-ventas";
+import { ConfigurarColumnasVentas } from "@/components/configurar-columnas-ventas";
 
 const MESES = ["Ene", "Feb", "Mar", "Abr", "May", "Jun", "Jul", "Ago", "Sep", "Oct", "Nov", "Dic"];
 
@@ -46,97 +51,41 @@ function etiquetaCorta(yyyymm: string): string {
 }
 
 const EXCEL_MAX = 1_048_575;
+const LIMIT_GRILLA = 2000;
+const STORAGE_COLS = "ventas_cols_visibles";
+
+const COLS_DEFAULT = [
+  "Periodo",
+  "Fecha",
+  "tipoDocto",
+  "Numero",
+  "SUCURSAL",
+  "Producto",
+  "Descripcion Producto",
+  "Cantidad",
+  "Total Neta",
+  "Marca",
+  "Tipo Cliente",
+];
+
+type Tab = "detalle" | "resumen";
 
 export default function VentasPage() {
-  const [kpis, setKpis] = useState<VentasKpis | null>(null);
-  const [serie, setSerie] = useState<VentasMes[]>([]);
-  const [porSucursal, setPorSucursal] = useState<VentasPorSucursal | null>(null);
+  const [tab, setTab] = useState<Tab>("detalle");
   const [meta, setMeta] = useState<PostVentaMeta | null>(null);
-  const [cargando, setCargando] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  // Export
-  const [desde, setDesde] = useState("");
-  const [hasta, setHasta] = useState("");
-  const [sucursal, setSucursal] = useState("");
-  const [conteo, setConteo] = useState<number | null>(null);
-  const [contando, setContando] = useState(false);
-  const [descargando, setDescargando] = useState(false);
-
-  const cargar = useCallback(async () => {
-    setCargando(true);
-    setError(null);
-    try {
-      const [k, s, ps, m] = await Promise.all([
-        api.ventasKpis(),
-        api.ventasMensual(12),
-        api.ventasPorSucursal(),
-        api.postVentaMeta(),
-      ]);
-      setKpis(k);
-      setSerie(s);
-      setPorSucursal(ps);
-      setMeta(m);
-      if (m.periodos.length > 0) {
-        setDesde(m.periodos[0]);
-        setHasta(m.periodos[m.periodos.length - 1]);
-      }
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "Error al cargar");
-    } finally {
-      setCargando(false);
-    }
+  useEffect(() => {
+    api.postVentaMeta().then(setMeta).catch(() => setError("No se pudo cargar metadatos"));
   }, []);
 
-  useEffect(() => {
-    cargar();
-  }, [cargar]);
-
-  const filtros = useMemo(
-    () => ({
-      periodo_desde: desde || null,
-      periodo_hasta: hasta || null,
-      sucursal: sucursal || null,
-    }),
-    [desde, hasta, sucursal]
-  );
-
-  useEffect(() => {
-    if (!meta || meta.filas === 0) return;
-    let activo = true;
-    setContando(true);
-    const t = setTimeout(() => {
-      api
-        .postVentaContar(filtros)
-        .then((n) => activo && setConteo(n))
-        .catch(() => activo && setConteo(null))
-        .finally(() => activo && setContando(false));
-    }, 250);
-    return () => {
-      activo = false;
-      clearTimeout(t);
-    };
-  }, [filtros, meta]);
-
-  const descargar = useCallback(async () => {
-    setDescargando(true);
-    try {
-      await api.exportPostVenta(filtros);
-    } catch (e) {
-      setError(e instanceof Error ? e.message : "No se pudo generar el Excel");
-    } finally {
-      setDescargando(false);
-    }
-  }, [filtros]);
-
-  const excedido = conteo !== null && conteo > EXCEL_MAX;
-  const sinFilas = conteo === 0;
-  const periodoInvalido = Boolean(desde && hasta && desde > hasta);
-
-  const serieParaGrafico = serie.map((m) => ({ ...m, etiqueta: etiquetaCorta(m.periodo) }));
+  const tabs: { id: Tab; label: string; icon: React.ReactNode }[] = [
+    { id: "detalle", label: "Detalle", icon: <LayoutList size={15} /> },
+    { id: "resumen", label: "Resumen", icon: <BarChart3 size={15} /> },
+  ];
 
   return (
-    <div className="space-y-5">
+    <div className="space-y-4">
       <div className="flex flex-wrap items-end justify-between gap-3">
         <div>
           <p className="kicker mb-1">Operación</p>
@@ -144,12 +93,10 @@ export default function VentasPage() {
             Ventas
           </h1>
           <p className="mt-3 text-[13px] text-ink-500">
-            {cargando ? "Cargando…" : null}
-            {meta && !cargando && (
+            {meta && (
               <>
-                {formatoNumero(meta.filas)} líneas ·{" "}
-                {meta.periodos.length} mes{meta.periodos.length === 1 ? "" : "es"} ·{" "}
-                actualizado{" "}
+                {formatoNumero(meta.filas)} líneas · {meta.periodos.length} mes
+                {meta.periodos.length === 1 ? "" : "es"} · actualizado{" "}
                 <b className="font-mono">
                   {meta.actualizado_en ? formatoFechaHora(meta.actualizado_en) : "—"}
                 </b>
@@ -165,8 +112,280 @@ export default function VentasPage() {
         </p>
       )}
 
-      {/* KPIs (CLP + Unidades) */}
-      {kpis && kpis.periodo_actual && (
+      <div className="flex gap-1 border-b border-ink-200">
+        {tabs.map((t) => (
+          <button
+            key={t.id}
+            onClick={() => setTab(t.id)}
+            className={`flex items-center gap-1.5 border-b-2 px-3 py-2 text-[13px] font-medium transition-colors ${
+              tab === t.id
+                ? "border-accent-700 text-ink-900"
+                : "border-transparent text-ink-500 hover:text-ink-900"
+            }`}
+          >
+            {t.icon} {t.label}
+          </button>
+        ))}
+      </div>
+
+      {tab === "detalle" && <SeccionDetalle meta={meta} />}
+      {tab === "resumen" && <SeccionResumen />}
+    </div>
+  );
+}
+
+/* =========================================================
+   TAB DETALLE — tabla AG Grid estilo ERP + export
+   ========================================================= */
+function SeccionDetalle({ meta }: { meta: PostVentaMeta | null }) {
+  const [busqueda, setBusqueda] = useState("");
+  const [desde, setDesde] = useState("");
+  const [hasta, setHasta] = useState("");
+  const [sucursal, setSucursal] = useState("");
+  const [rows, setRows] = useState<VentaLinea[]>([]);
+  const [columnas, setColumnas] = useState<string[]>([]);
+  const [total, setTotal] = useState(0);
+  const [cargando, setCargando] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+  const [colsVisibles, setColsVisibles] = useState<string[]>([]);
+  const [modalCols, setModalCols] = useState(false);
+  const [conteo, setConteo] = useState<number | null>(null);
+  const [descargando, setDescargando] = useState(false);
+
+  // Inicializar filtros desde meta (rango completo).
+  useEffect(() => {
+    if (!meta || meta.periodos.length === 0) return;
+    setDesde(meta.periodos[meta.periodos.length - 1]); // por defecto mes mas reciente
+    setHasta(meta.periodos[meta.periodos.length - 1]);
+  }, [meta]);
+
+  // Restaurar columnas visibles desde localStorage.
+  useEffect(() => {
+    if (typeof window === "undefined") return;
+    const saved = localStorage.getItem(STORAGE_COLS);
+    if (saved) {
+      try {
+        const arr = JSON.parse(saved);
+        if (Array.isArray(arr) && arr.length > 0) {
+          setColsVisibles(arr);
+          return;
+        }
+      } catch {}
+    }
+    setColsVisibles(COLS_DEFAULT);
+  }, []);
+
+  // Guardar columnas visibles.
+  useEffect(() => {
+    if (typeof window === "undefined" || colsVisibles.length === 0) return;
+    localStorage.setItem(STORAGE_COLS, JSON.stringify(colsVisibles));
+  }, [colsVisibles]);
+
+  const filtros = useMemo(
+    () => ({
+      periodo_desde: desde || undefined,
+      periodo_hasta: hasta || undefined,
+      sucursal: sucursal || undefined,
+      q: busqueda || undefined,
+    }),
+    [desde, hasta, sucursal, busqueda]
+  );
+
+  const cargar = useCallback(async () => {
+    setCargando(true);
+    setError(null);
+    try {
+      const r = await api.ventasLineas(filtros, { page: 1, limit: LIMIT_GRILLA });
+      setRows(r.items);
+      setTotal(r.total);
+      setColumnas(r.columnas);
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "Error al cargar");
+    } finally {
+      setCargando(false);
+    }
+  }, [filtros]);
+
+  useEffect(() => {
+    const t = setTimeout(cargar, 300);
+    return () => clearTimeout(t);
+  }, [cargar]);
+
+  // Conteo para el boton "Exportar" (cuantas se descargarian).
+  useEffect(() => {
+    if (!meta) return;
+    api
+      .postVentaContar({
+        periodo_desde: desde || null,
+        periodo_hasta: hasta || null,
+        sucursal: sucursal || null,
+      })
+      .then(setConteo)
+      .catch(() => setConteo(null));
+  }, [desde, hasta, sucursal, meta]);
+
+  const descargar = async () => {
+    setDescargando(true);
+    try {
+      await api.exportPostVenta({
+        periodo_desde: desde || null,
+        periodo_hasta: hasta || null,
+        sucursal: sucursal || null,
+      });
+    } catch (e) {
+      setError(e instanceof Error ? e.message : "No se pudo generar el Excel");
+    } finally {
+      setDescargando(false);
+    }
+  };
+
+  const excedido = conteo !== null && conteo > EXCEL_MAX;
+
+  if (!meta) {
+    return <p className="text-ink-500">Cargando…</p>;
+  }
+  if (meta.filas === 0) {
+    return (
+      <div className="rounded-sm border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">
+        Aún no hay datos de Post Venta cargados. Ejecutá la sincronización con Power BI
+        Desktop abierto.
+      </div>
+    );
+  }
+
+  return (
+    <div className="space-y-3">
+      {/* Toolbar */}
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="text-[13px] text-ink-600">
+          {cargando ? "Cargando…" : `${formatoNumero(total)} líneas`}
+          {total > rows.length && ` (mostrando ${formatoNumero(rows.length)})`}
+        </div>
+        <div className="flex flex-wrap items-center gap-2">
+          <button
+            onClick={cargar}
+            className="inline-flex items-center gap-1.5 rounded-sm border border-ink-200 bg-white px-3 py-1.5 text-[13px] hover:bg-paper-100"
+          >
+            <RefreshCw size={14} /> Actualizar
+          </button>
+          <button
+            onClick={() => setModalCols(true)}
+            className="inline-flex items-center gap-1.5 rounded-sm border border-ink-200 bg-white px-3 py-1.5 text-[13px] hover:bg-paper-100"
+          >
+            <Columns3 size={14} /> Columnas
+          </button>
+          <button
+            onClick={descargar}
+            disabled={descargando || excedido}
+            className="inline-flex items-center gap-1.5 rounded-sm bg-ink-900 px-3 py-1.5 text-[13px] font-semibold uppercase tracking-wider text-paper transition-colors hover:bg-accent-700 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Download size={14} className={descargando ? "animate-pulse" : ""} />
+            {descargando ? "Generando…" : "Exportar Excel"}
+          </button>
+        </div>
+      </div>
+
+      {/* Filtros */}
+      <div className="rounded-sm border border-ink-200 bg-white p-3 shadow-card">
+        <div className="grid gap-3 sm:grid-cols-4">
+          <FieldText
+            label="Buscar"
+            icon={<Search size={14} />}
+            value={busqueda}
+            onChange={setBusqueda}
+            placeholder="Producto, descripción, cliente…"
+          />
+          <FieldSelect
+            label="Desde"
+            value={desde}
+            onChange={setDesde}
+            options={meta.periodos.map((p) => ({ value: p, label: etiquetaPeriodo(p) }))}
+          />
+          <FieldSelect
+            label="Hasta"
+            value={hasta}
+            onChange={setHasta}
+            options={meta.periodos.map((p) => ({ value: p, label: etiquetaPeriodo(p) }))}
+          />
+          <FieldSelect
+            label="Sucursal"
+            value={sucursal}
+            onChange={setSucursal}
+            options={[
+              { value: "", label: "Todas" },
+              ...meta.sucursales.map((s) => ({ value: s, label: s })),
+            ]}
+          />
+        </div>
+        {excedido && (
+          <p className="mt-3 flex items-start gap-2 rounded-sm border border-amber-200 bg-amber-50 px-3 py-2 text-[12.5px] text-amber-800">
+            <AlertTriangle size={14} className="mt-0.5 shrink-0" />
+            La selección excede el máximo de Excel ({formatoNumero(EXCEL_MAX)} filas). Acotá
+            el rango o elegí una sucursal para descargar.
+          </p>
+        )}
+        {!excedido && conteo !== null && (
+          <p className="mt-2 text-[12px] text-ink-500">
+            Al exportar se descargarán <b className="text-ink-800">{formatoNumero(conteo)}</b>{" "}
+            líneas. (La tabla de arriba muestra hasta {formatoNumero(LIMIT_GRILLA)} para ser
+            ágil.)
+          </p>
+        )}
+      </div>
+
+      {error && (
+        <p className="rounded-sm border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-700">
+          {error}
+        </p>
+      )}
+
+      <TablaVentas rows={rows} columnasVisibles={colsVisibles} columnasOrden={columnas} />
+
+      <ConfigurarColumnasVentas
+        open={modalCols}
+        onClose={() => setModalCols(false)}
+        todas={columnas}
+        visibles={colsVisibles}
+        defaultCols={COLS_DEFAULT}
+        onChange={setColsVisibles}
+      />
+    </div>
+  );
+}
+
+/* =========================================================
+   TAB RESUMEN — KPIs + gráfico + tabla por sucursal
+   ========================================================= */
+function SeccionResumen() {
+  const [kpis, setKpis] = useState<VentasKpis | null>(null);
+  const [serie, setSerie] = useState<VentasMes[]>([]);
+  const [porSucursal, setPorSucursal] = useState<VentasPorSucursal | null>(null);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    Promise.all([api.ventasKpis(), api.ventasMensual(12), api.ventasPorSucursal()])
+      .then(([k, s, ps]) => {
+        setKpis(k);
+        setSerie(s);
+        setPorSucursal(ps);
+      })
+      .catch((e) => setError(e instanceof Error ? e.message : "Error"));
+  }, []);
+
+  if (error) {
+    return (
+      <p className="rounded-sm border border-red-200 bg-red-50 px-3 py-2 text-[13px] text-red-700">
+        {error}
+      </p>
+    );
+  }
+  if (!kpis) return <p className="text-ink-500">Cargando…</p>;
+
+  const serieParaGrafico = serie.map((m) => ({ ...m, etiqueta: etiquetaCorta(m.periodo) }));
+
+  return (
+    <div className="space-y-5">
+      {kpis.periodo_actual && (
         <>
           <p className="kicker">Mes en curso · {etiquetaPeriodo(kpis.periodo_actual)}</p>
           <div className="grid grid-cols-2 gap-px bg-ink-200 lg:grid-cols-4">
@@ -199,7 +418,6 @@ export default function VentasPage() {
         </>
       )}
 
-      {/* Grafico mensual */}
       {serieParaGrafico.length > 0 && (
         <div className="rounded-sm border border-ink-200 bg-white shadow-card">
           <div className="border-b border-ink-100 px-5 py-3">
@@ -219,7 +437,6 @@ export default function VentasPage() {
                   tickLine={false}
                 />
                 <YAxis
-                  yAxisId="left"
                   tick={{ fontSize: 11, fill: "#a8a29e" }}
                   axisLine={false}
                   tickLine={false}
@@ -227,16 +444,12 @@ export default function VentasPage() {
                   tickFormatter={(v: number) => formatoCLPCorto(v)}
                 />
                 <Tooltip
-                  formatter={(v: number, name: string) => {
-                    if (name === "CLP") return [formatoCLP(v), "CLP"];
-                    return [formatoNumero(v), "Unidades"];
-                  }}
+                  formatter={(v: number) => [formatoCLP(v), "CLP"]}
                   cursor={{ fill: "#fff7ed" }}
                   contentStyle={{ fontSize: 12, borderRadius: 4, border: "1px solid #ebe9dd" }}
                 />
                 <Legend iconType="square" wrapperStyle={{ fontSize: 11, paddingTop: 8 }} />
                 <Bar
-                  yAxisId="left"
                   dataKey="clp"
                   name="CLP"
                   fill="#1e40af"
@@ -249,7 +462,6 @@ export default function VentasPage() {
         </div>
       )}
 
-      {/* Tabla por sucursal */}
       {porSucursal && porSucursal.items.length > 0 && (
         <div className="rounded-sm border border-ink-200 bg-white shadow-card">
           <div className="border-b border-ink-100 px-5 py-3">
@@ -282,83 +494,6 @@ export default function VentasPage() {
               ))}
             </tbody>
           </table>
-        </div>
-      )}
-
-      {/* Descarga Excel */}
-      {meta && meta.filas > 0 && (
-        <div className="rounded-sm border border-ink-200 bg-white shadow-card">
-          <div className="border-b border-ink-100 px-5 py-3">
-            <p className="kicker">Descarga</p>
-            <h2 className="flex items-center gap-2 font-display text-[16px] font-medium text-ink-900">
-              <FileSpreadsheet size={18} className="text-accent-700" /> Planilla Post Venta
-              completa
-            </h2>
-          </div>
-          <div className="space-y-4 p-5">
-            <div className="grid gap-4 sm:grid-cols-3">
-              <FieldSelect
-                label="Desde"
-                value={desde}
-                onChange={setDesde}
-                options={meta.periodos.map((p) => ({ value: p, label: etiquetaPeriodo(p) }))}
-              />
-              <FieldSelect
-                label="Hasta"
-                value={hasta}
-                onChange={setHasta}
-                options={meta.periodos.map((p) => ({ value: p, label: etiquetaPeriodo(p) }))}
-              />
-              <FieldSelect
-                label="Sucursal"
-                value={sucursal}
-                onChange={setSucursal}
-                options={[
-                  { value: "", label: "Todas" },
-                  ...meta.sucursales.map((s) => ({ value: s, label: s })),
-                ]}
-              />
-            </div>
-
-            <div className="text-[13px] text-ink-700">
-              {periodoInvalido ? (
-                <span className="text-amber-700">
-                  El mes &ldquo;desde&rdquo; es posterior al &ldquo;hasta&rdquo;.
-                </span>
-              ) : contando ? (
-                "Calculando filas…"
-              ) : conteo !== null ? (
-                <>
-                  Selección: <b className="tabular text-ink-900">{formatoNumero(conteo)}</b>{" "}
-                  líneas
-                </>
-              ) : null}
-            </div>
-
-            {excedido && (
-              <p className="flex items-start gap-2 rounded-sm border border-amber-200 bg-amber-50 px-3 py-2 text-[13px] text-amber-800">
-                <AlertTriangle size={16} className="mt-0.5 shrink-0" />
-                Demasiadas líneas para un Excel (máx {formatoNumero(EXCEL_MAX)}). Acotá el
-                rango o elegí una sucursal.
-              </p>
-            )}
-
-            <button
-              onClick={descargar}
-              disabled={descargando || excedido || sinFilas || periodoInvalido}
-              className="flex items-center gap-2 rounded-sm bg-ink-900 px-4 py-2 text-[13px] font-semibold uppercase tracking-wider text-paper transition-colors hover:bg-accent-700 disabled:cursor-not-allowed disabled:opacity-50"
-            >
-              <Download size={14} className={descargando ? "animate-pulse" : ""} />
-              {descargando ? "Generando…" : "Descargar Excel"}
-            </button>
-          </div>
-        </div>
-      )}
-
-      {meta && meta.filas === 0 && (
-        <div className="rounded-sm border border-amber-200 bg-amber-50 px-4 py-3 text-[13px] text-amber-800">
-          Aún no hay datos de Post Venta cargados. Ejecutá la sincronización con Power BI
-          Desktop abierto.
         </div>
       )}
     </div>
@@ -434,6 +569,42 @@ function FieldSelect({
           </option>
         ))}
       </select>
+    </label>
+  );
+}
+
+function FieldText({
+  label,
+  icon,
+  value,
+  onChange,
+  placeholder,
+}: {
+  label: string;
+  icon?: React.ReactNode;
+  value: string;
+  onChange: (v: string) => void;
+  placeholder?: string;
+}) {
+  return (
+    <label className="flex flex-col gap-1">
+      <span className="kicker">{label}</span>
+      <div className="relative">
+        {icon && (
+          <span className="absolute left-2.5 top-1/2 -translate-y-1/2 text-ink-400">
+            {icon}
+          </span>
+        )}
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => onChange(e.target.value)}
+          placeholder={placeholder}
+          className={`w-full rounded-sm border border-ink-200 bg-white py-2 text-[13px] text-ink-900 placeholder:text-ink-400 focus:border-accent-700 focus:outline-none focus:ring-2 focus:ring-accent-700/30 ${
+            icon ? "pl-8 pr-3" : "px-3"
+          }`}
+        />
+      </div>
     </label>
   );
 }

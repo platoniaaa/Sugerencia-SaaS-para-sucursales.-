@@ -5,11 +5,13 @@ KPIs y graficos los leemos de post_venta_resumen para ser rapidos.
 """
 from __future__ import annotations
 
-from sqlalchemy import desc, func, select
+import json
+
+from sqlalchemy import desc, func, or_, select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
-from ..models import PostVentaResumen
+from ..models import PostVentaFila, PostVentaMeta, PostVentaResumen
 
 settings = get_settings()
 
@@ -94,6 +96,60 @@ def serie_mensual(db: Session, meses: int = 12) -> list[dict]:
         for p, c, u in rows if p
     ]
     return serie[-meses:]
+
+
+def listar_lineas(
+    db: Session,
+    *,
+    periodo_desde: str | None = None,
+    periodo_hasta: str | None = None,
+    sucursal: str | None = None,
+    q: str | None = None,
+    page: int = 1,
+    limit: int = 100,
+) -> tuple[list[dict], int, list[str]]:
+    """Devuelve lineas detalladas de Post Venta como dicts {columna: valor}.
+
+    Parsea el JSON posicional usando el orden guardado en PostVentaMeta.columnas.
+    Si q tiene valor, filtra por LIKE en el JSON crudo (rapido, no muy preciso pero
+    sirve para buscar texto: producto, descripcion, cliente, etc.).
+    """
+    meta = db.get(PostVentaMeta, _tenant())
+    if not meta:
+        return [], 0, []
+    columnas = json.loads(meta.columnas)
+
+    base = select(PostVentaFila).where(PostVentaFila.tenant_id == _tenant())
+    if periodo_desde:
+        base = base.where(PostVentaFila.periodo >= periodo_desde)
+    if periodo_hasta:
+        base = base.where(PostVentaFila.periodo <= periodo_hasta)
+    if sucursal:
+        base = base.where(PostVentaFila.sucursal == sucursal)
+    if q and q.strip():
+        like = f"%{q.strip()}%"
+        base = base.where(PostVentaFila.datos.ilike(like))
+
+    total = db.scalar(select(func.count()).select_from(base.subquery())) or 0
+    stmt = (
+        base.order_by(desc(PostVentaFila.periodo), desc(PostVentaFila.id))
+        .offset((page - 1) * limit)
+        .limit(limit)
+    )
+    filas = list(db.scalars(stmt).all())
+
+    items: list[dict] = []
+    for f in filas:
+        try:
+            valores = json.loads(f.datos)
+        except Exception:
+            valores = []
+        d: dict = {"_id": f.id}
+        for i, col in enumerate(columnas):
+            d[col] = valores[i] if i < len(valores) else None
+        items.append(d)
+
+    return items, total, columnas
 
 
 def por_sucursal(db: Session, periodo: str) -> list[dict]:

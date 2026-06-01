@@ -40,3 +40,28 @@ def por_sucursal(
         periodo = periodos[-1]
     items = ventas_post_service.por_sucursal(db, periodo)
     return {"periodo": periodo, "items": items}
+
+
+@router.get("/lineas")
+def lineas(
+    periodo_desde: str | None = Query(None),
+    periodo_hasta: str | None = Query(None),
+    sucursal: str | None = Query(None),
+    q: str | None = Query(None),
+    page: int = Query(1, ge=1),
+    limit: int = Query(200, ge=1, le=2000),
+    db: Session = Depends(get_db),
+) -> dict:
+    """Lineas detalladas de Post Venta (estilo ERP) con filtros + paginacion."""
+    items, total, columnas = ventas_post_service.listar_lineas(
+        db,
+        periodo_desde=periodo_desde, periodo_hasta=periodo_hasta,
+        sucursal=sucursal, q=q, page=page, limit=limit,
+    )
+    return {
+        "items": items,
+        "total": total,
+        "page": page,
+        "limit": limit,
+        "columnas": columnas,
+    }

@@ -312,3 +312,23 @@ export interface VentasPorSucursal {
   periodo: string | null;
   items: VentasSucursalRow[];
 }
+
+export interface VentaLinea {
+  _id: number;
+  [columna: string]: string | number | null;
+}
+
+export interface VentasLineasPage {
+  items: VentaLinea[];
+  total: number;
+  page: number;
+  limit: number;
+  columnas: string[];
+}
+
+export interface VentasLineasFiltros {
+  periodo_desde?: string;
+  periodo_hasta?: string;
+  sucursal?: string;
+  q?: string;
+}

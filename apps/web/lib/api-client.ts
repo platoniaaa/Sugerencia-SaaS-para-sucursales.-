@@ -349,6 +349,20 @@ export const api = {
     return getJSON(`/api/ventas/por-sucursal${q}`);
   },
 
+  async ventasLineas(
+    f: import("./types").VentasLineasFiltros,
+    opts: { page?: number; limit?: number } = {}
+  ): Promise<import("./types").VentasLineasPage> {
+    const p = new URLSearchParams();
+    if (f.periodo_desde) p.set("periodo_desde", f.periodo_desde);
+    if (f.periodo_hasta) p.set("periodo_hasta", f.periodo_hasta);
+    if (f.sucursal) p.set("sucursal", f.sucursal);
+    if (f.q) p.set("q", f.q);
+    p.set("page", String(opts.page ?? 1));
+    p.set("limit", String(opts.limit ?? 500));
+    return getJSON(`/api/ventas/lineas?${p.toString()}`);
+  },
+
   async ultimaSincronizacion(): Promise<{ creado_en: string | null; detalle: string | null }> {
     return getJSON("/api/ultima-sincronizacion");
   },
