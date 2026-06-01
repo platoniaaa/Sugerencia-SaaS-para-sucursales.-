@@ -109,6 +109,7 @@ class SugeridoFiltros(BaseModel):
     proveedor: str | None = None
     solo_pedir: bool = True
     solo_abastece_cd: bool = False  # solo productos con "Abastece CD" = Si
+    solo_nacionales: bool = False  # excluye los importados (es_importado=True)
 
 
 class ExportRequest(BaseModel):

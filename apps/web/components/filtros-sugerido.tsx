@@ -13,7 +13,8 @@ export function FiltrosSugerido({ filtros, onChange }: Props) {
   const hayCambios =
     Boolean(filtros.q) ||
     filtros.solo_pedir === false ||
-    filtros.solo_abastece_cd === true;
+    filtros.solo_abastece_cd === true ||
+    filtros.solo_nacionales === true;
 
   return (
     <div className="flex flex-wrap items-center gap-3 rounded-sm border border-ink-200 bg-white p-3 shadow-card">
@@ -52,11 +53,22 @@ export function FiltrosSugerido({ filtros, onChange }: Props) {
         onChange={(v) => set({ solo_abastece_cd: v })}
         title="Muestra solo los productos con Abastece CD = Sí"
       />
+      <Toggle
+        label="Solo nacionales"
+        active={filtros.solo_nacionales ?? false}
+        onChange={(v) => set({ solo_nacionales: v })}
+        title="Excluye los productos importados"
+      />
 
       {hayCambios && (
         <button
           onClick={() =>
-            onChange({ q: "", solo_pedir: true, solo_abastece_cd: false })
+            onChange({
+              q: "",
+              solo_pedir: true,
+              solo_abastece_cd: false,
+              solo_nacionales: false,
+            })
           }
           className="flex items-center gap-1 rounded-sm px-2 py-1.5 text-[12px] text-ink-500 hover:bg-ink-100 hover:text-ink-800"
         >
