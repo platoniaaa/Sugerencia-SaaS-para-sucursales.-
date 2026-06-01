@@ -123,10 +123,9 @@ def listar(
     # trae lo del catálogo para no esconderlo.
     total_cat = 0
     if f.q and f.q.strip():
-        productos_en_sugerido = set(
-            db.scalars(select(distinct(Sugerido.producto))).all()
-        )
         like = f"%{f.q.strip()}%"
+        # Anti-join con subquery: evita pasar 15k parametros como un .in_().
+        productos_sugerido_sub = select(distinct(Sugerido.producto)).scalar_subquery()
         cat_stmt = (
             select(ProductoCatalogo)
             .where(
@@ -135,13 +134,18 @@ def listar(
                     ProductoCatalogo.glosa.ilike(like),
                 )
             )
-            .where(~ProductoCatalogo.producto.in_(productos_en_sugerido))
+            .where(~ProductoCatalogo.producto.in_(productos_sugerido_sub))
             .order_by(ProductoCatalogo.producto.asc())
-            .limit(500)  # tope para no saturar respuesta
+            .limit(500)
         )
-        catalogo_items = list(db.scalars(cat_stmt).all())
-        total_cat = len(catalogo_items)
-        items.extend(_row_desde_catalogo(c) for c in catalogo_items)
+        try:
+            catalogo_items = list(db.scalars(cat_stmt).all())
+            total_cat = len(catalogo_items)
+            items.extend(_row_desde_catalogo(c) for c in catalogo_items)
+        except Exception:
+            # Si la tabla producto_catalogo aun no existe o falla la query, no
+            # debemos romper la pagina principal del dashboard.
+            total_cat = 0
 
     return items, total + total_cat
 
