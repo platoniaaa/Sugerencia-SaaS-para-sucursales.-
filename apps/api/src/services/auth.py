@@ -14,9 +14,10 @@ import json
 import os
 import time
 
-from fastapi import Header, HTTPException
+from fastapi import Depends, Header, HTTPException
 
 from ..config import get_settings
+from ..db import get_db
 
 settings = get_settings()
 
@@ -80,4 +81,14 @@ def requiere_auth(authorization: str | None = Header(default=None)) -> str:
     email = verificar_token(authorization[7:])
     if not email:
         raise HTTPException(status_code=401, detail="Sesion invalida o expirada")
+    return email
+
+
+def requiere_admin(email: str = Depends(requiere_auth), db=Depends(get_db)) -> str:
+    """Bloquea endpoints reservados a admin. Devuelve el email si es admin."""
+    from ..models import Usuario  # import local para evitar ciclo
+
+    user = db.get(Usuario, email)
+    if not user or not user.es_admin:
+        raise HTTPException(status_code=403, detail="Requiere permisos de admin")
     return email

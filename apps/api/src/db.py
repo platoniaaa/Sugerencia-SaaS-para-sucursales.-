@@ -70,6 +70,7 @@ def create_all() -> None:
     # Mientras no haya Alembic, usamos ADD COLUMN IF NOT EXISTS (Postgres y SQLite>=3.35).
     migraciones = [
         "ALTER TABLE sugerencia_recurrente ADD COLUMN IF NOT EXISTS dias_inventario INTEGER",
+        "ALTER TABLE usuario ADD COLUMN IF NOT EXISTS es_admin BOOLEAN NOT NULL DEFAULT FALSE",
     ]
     with engine.begin() as conn:
         for sql in migraciones:

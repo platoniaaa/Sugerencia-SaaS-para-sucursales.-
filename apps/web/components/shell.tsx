@@ -4,17 +4,18 @@ import { useEffect, useState } from "react";
 import Link from "next/link";
 import { usePathname, useRouter } from "next/navigation";
 import { LogOut } from "lucide-react";
-import { estaAutenticado, getEmail, getNombre, logout } from "@/lib/auth";
+import { estaAutenticado, getEmail, getEsAdmin, getNombre, logout } from "@/lib/auth";
 import { CampanitaNotificaciones } from "@/components/campanita-notificaciones";
 
-const NAV = [
+type NavItem = { href: string; label: string; soloAdmin?: boolean };
+const NAV: NavItem[] = [
   { href: "/", label: "Dashboard" },
   { href: "/compras", label: "Compras" },
   { href: "/catalogo", label: "Catálogo" },
   { href: "/sugerencias-manuales", label: "Sugerencias manuales" },
   { href: "/auditoria", label: "Auditoría" },
   { href: "/exportar", label: "Exportar" },
-  { href: "/cargar", label: "Cargar datos" },
+  { href: "/cargar", label: "Cargar datos", soloAdmin: true },
 ];
 
 export function Shell({ children }: { children: React.ReactNode }) {
@@ -47,6 +48,8 @@ export function Shell({ children }: { children: React.ReactNode }) {
 
   const email = getEmail();
   const nombre = getNombre();
+  const esAdmin = getEsAdmin();
+  const navVisible = NAV.filter((n) => !n.soloAdmin || esAdmin);
 
   return (
     <>
@@ -61,7 +64,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
             </span>
           </Link>
           <nav className="ml-auto flex items-center gap-1 text-sm">
-            {NAV.map((n) => (
+            {navVisible.map((n) => (
               <Link
                 key={n.href}
                 href={n.href}

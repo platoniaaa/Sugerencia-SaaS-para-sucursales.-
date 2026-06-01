@@ -3,6 +3,7 @@
 const TOKEN = "sugerido_token";
 const EMAIL = "sugerido_email";
 const NOMBRE = "sugerido_nombre";
+const ES_ADMIN = "sugerido_es_admin";
 
 export function getToken(): string | null {
   if (typeof window === "undefined") return null;
@@ -19,17 +20,26 @@ export function getNombre(): string | null {
   return localStorage.getItem(NOMBRE);
 }
 
-export function setSession(token: string, email: string, nombre: string | null) {
+export function getEsAdmin(): boolean {
+  if (typeof window === "undefined") return false;
+  return localStorage.getItem(ES_ADMIN) === "1";
+}
+
+export function setSession(
+  token: string, email: string, nombre: string | null, esAdmin = false
+) {
   localStorage.setItem(TOKEN, token);
   localStorage.setItem(EMAIL, email);
   if (nombre) localStorage.setItem(NOMBRE, nombre);
   else localStorage.removeItem(NOMBRE);
+  localStorage.setItem(ES_ADMIN, esAdmin ? "1" : "0");
 }
 
 export function clearSession() {
   localStorage.removeItem(TOKEN);
   localStorage.removeItem(EMAIL);
   localStorage.removeItem(NOMBRE);
+  localStorage.removeItem(ES_ADMIN);
 }
 
 export function estaAutenticado(): boolean {

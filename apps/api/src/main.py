@@ -23,7 +23,7 @@ from .routers import (
     sugerencias_manuales,
     sugerido,
 )
-from .services.auth import requiere_auth
+from .services.auth import requiere_admin, requiere_auth
 
 settings = get_settings()
 
@@ -76,7 +76,8 @@ app.include_router(compras.router, dependencies=_protegido)
 app.include_router(post_venta.router, dependencies=_protegido)
 app.include_router(catalogo.router, dependencies=_protegido)
 app.include_router(auditoria.router, dependencies=_protegido)
-app.include_router(admin.router, dependencies=_protegido)
+# Admin: requiere flag es_admin (no solo estar logueado).
+app.include_router(admin.router, dependencies=[Depends(requiere_admin)])
 
 
 @app.get("/", include_in_schema=False)

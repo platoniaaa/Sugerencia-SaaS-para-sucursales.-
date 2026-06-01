@@ -2,14 +2,21 @@
 
 import { useEffect, useState } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { CheckCircle2, Cloud, FileSpreadsheet, RefreshCw, Upload } from "lucide-react";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api-client";
+import { getEsAdmin } from "@/lib/auth";
 import { formatoNumero } from "@/lib/formato";
 import type { CargaResultado } from "@/lib/types";
 
 export default function CargarPage() {
+  const router = useRouter();
+  // Si alguien sin permisos cae aca por URL, lo mandamos al dashboard.
+  useEffect(() => {
+    if (!getEsAdmin()) router.replace("/");
+  }, [router]);
   const [file, setFile] = useState<File | null>(null);
   const [cargando, setCargando] = useState(false);
   const [resultado, setResultado] = useState<CargaResultado | null>(null);

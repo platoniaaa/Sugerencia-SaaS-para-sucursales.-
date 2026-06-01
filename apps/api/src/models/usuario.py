@@ -18,4 +18,6 @@ class Usuario(Base):
     password_hash: Mapped[str] = mapped_column(String, nullable=False)
     nombre: Mapped[str | None] = mapped_column(String, nullable=True)
     activo: Mapped[bool] = mapped_column(Boolean, default=True)
+    # Acceso a vistas/endpoints solo de admin (ej. "Cargar datos").
+    es_admin: Mapped[bool] = mapped_column(Boolean, default=False, nullable=False)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)

@@ -19,6 +19,7 @@ class LoginResponse(BaseModel):
     token: str
     email: str
     nombre: str | None = None
+    es_admin: bool = False
 
 
 @router.post("/login", response_model=LoginResponse)
@@ -27,10 +28,17 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     usuario = db.get(Usuario, email)
     if not usuario or not usuario.activo or not auth.verify_password(payload.password, usuario.password_hash):
         raise HTTPException(status_code=401, detail="Correo o contraseña incorrectos")
-    return LoginResponse(token=auth.crear_token(email), email=email, nombre=usuario.nombre)
+    return LoginResponse(
+        token=auth.crear_token(email), email=email, nombre=usuario.nombre,
+        es_admin=usuario.es_admin,
+    )
 
 
 @router.get("/me")
 def me(email: str = Depends(auth.requiere_auth), db: Session = Depends(get_db)):
     usuario = db.get(Usuario, email)
-    return {"email": email, "nombre": usuario.nombre if usuario else None}
+    return {
+        "email": email,
+        "nombre": usuario.nombre if usuario else None,
+        "es_admin": bool(usuario and usuario.es_admin),
+    }
