@@ -150,7 +150,7 @@ function SeccionDetalle({ meta }: { meta: PostVentaMeta | null }) {
   const [colsVisibles, setColsVisibles] = useState<string[]>([]);
   const [modalCols, setModalCols] = useState(false);
   const [conteo, setConteo] = useState<number | null>(null);
-  const [descargando, setDescargando] = useState(false);
+  const [descargando, setDescargando] = useState<null | "csv" | "xlsx">(null);
 
   // Inicializar filtros desde meta (rango completo).
   useEffect(() => {
@@ -224,18 +224,21 @@ function SeccionDetalle({ meta }: { meta: PostVentaMeta | null }) {
       .catch(() => setConteo(null));
   }, [desde, hasta, sucursal, meta]);
 
-  const descargar = async () => {
-    setDescargando(true);
+  const descargar = async (formato: "csv" | "xlsx") => {
+    setDescargando(formato);
     try {
-      await api.exportPostVenta({
-        periodo_desde: desde || null,
-        periodo_hasta: hasta || null,
-        sucursal: sucursal || null,
-      });
+      await api.exportPostVenta(
+        {
+          periodo_desde: desde || null,
+          periodo_hasta: hasta || null,
+          sucursal: sucursal || null,
+        },
+        formato
+      );
     } catch (e) {
-      setError(e instanceof Error ? e.message : "No se pudo generar el Excel");
+      setError(e instanceof Error ? e.message : "No se pudo generar el archivo");
     } finally {
-      setDescargando(false);
+      setDescargando(null);
     }
   };
 
@@ -275,12 +278,22 @@ function SeccionDetalle({ meta }: { meta: PostVentaMeta | null }) {
             <Columns3 size={14} /> Columnas
           </button>
           <button
-            onClick={descargar}
-            disabled={descargando || excedido}
+            onClick={() => descargar("csv")}
+            disabled={descargando !== null}
+            title="CSV: rapido, ideal para muchas filas. Excel lo abre directo."
             className="inline-flex items-center gap-1.5 rounded-sm bg-ink-900 px-3 py-1.5 text-[13px] font-semibold uppercase tracking-wider text-paper transition-colors hover:bg-accent-700 disabled:cursor-not-allowed disabled:opacity-50"
           >
-            <Download size={14} className={descargando ? "animate-pulse" : ""} />
-            {descargando ? "Generando…" : "Exportar Excel"}
+            <Download size={14} className={descargando === "csv" ? "animate-pulse" : ""} />
+            {descargando === "csv" ? "Descargando…" : "Exportar CSV"}
+          </button>
+          <button
+            onClick={() => descargar("xlsx")}
+            disabled={descargando !== null || excedido}
+            title="Excel nativo. Mas lento; usalo solo para selecciones chicas."
+            className="inline-flex items-center gap-1.5 rounded-sm border border-ink-200 bg-white px-3 py-1.5 text-[13px] hover:bg-paper-100 disabled:cursor-not-allowed disabled:opacity-50"
+          >
+            <Download size={14} className={descargando === "xlsx" ? "animate-pulse" : ""} />
+            {descargando === "xlsx" ? "Generando…" : "Excel (.xlsx)"}
           </button>
         </div>
       </div>

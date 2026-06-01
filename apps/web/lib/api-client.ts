@@ -304,20 +304,26 @@ export const api = {
     return r.filas;
   },
 
-  async exportPostVenta(f: PostVentaFiltros): Promise<void> {
-    const res = await req("/api/post-venta/export-excel", {
+  async exportPostVenta(
+    f: PostVentaFiltros,
+    formato: "csv" | "xlsx" = "csv"
+  ): Promise<void> {
+    const url = formato === "csv" ? "/api/post-venta/export-csv" : "/api/post-venta/export-excel";
+    const res = await req(url, {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(f),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));
-      throw new Error(err.detail ?? "No se pudo generar el Excel");
+      throw new Error(err.detail ?? "No se pudo generar el archivo");
     }
     const blob = await res.blob();
     const dispo = res.headers.get("Content-Disposition") ?? "";
     const match = dispo.match(/filename="?([^"]+)"?/);
-    const nombre = match?.[1] ?? "planilla_post_venta.xlsx";
+    const nombre =
+      match?.[1] ??
+      (formato === "csv" ? "planilla_post_venta.csv" : "planilla_post_venta.xlsx");
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;

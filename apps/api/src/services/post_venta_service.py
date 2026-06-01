@@ -60,6 +60,41 @@ def contar(db: Session, periodo_desde, periodo_hasta, sucursal) -> int:
     return db.scalar(select(func.count()).select_from(stmt.subquery())) or 0
 
 
+def generar_csv_stream(db: Session, columnas, periodo_desde, periodo_hasta, sucursal):
+    """Generador que va emitiendo el CSV fila por fila (streaming real).
+
+    Mucho mas rapido y liviano que el Excel: 45k filas se descargan en segundos
+    sin acumular memoria. Excel abre el CSV directamente.
+    """
+    if not columnas:
+        m = db.get(PostVentaMeta, settings.default_tenant_id)
+        columnas = json.loads((m.columnas if m else "[]") or "[]")
+
+    # BOM UTF-8 para que Excel reconozca acentos en Windows.
+    yield "﻿".encode("utf-8")
+
+    def _esc(v) -> str:
+        if v is None:
+            return ""
+        s = str(v)
+        if any(ch in s for ch in [",", '"', "\n", "\r"]):
+            return '"' + s.replace('"', '""') + '"'
+        return s
+
+    yield (",".join(_esc(c) for c in columnas) + "\n").encode("utf-8")
+
+    stmt = _stmt_filtrado(periodo_desde, periodo_hasta, sucursal).order_by(PostVentaFila.id)
+    for fila in db.scalars(stmt).yield_per(2000):
+        try:
+            valores = json.loads(fila.datos)
+        except Exception:
+            continue
+        # Alinear longitud
+        if len(valores) < len(columnas):
+            valores = valores + [""] * (len(columnas) - len(valores))
+        yield (",".join(_esc(v) for v in valores[: len(columnas)]) + "\n").encode("utf-8")
+
+
 def generar_excel(db: Session, columnas, periodo_desde, periodo_hasta, sucursal) -> bytes:
     """Excel de la Planilla Post Venta filtrada. write_only para soportar muchas filas."""
     if not columnas:
