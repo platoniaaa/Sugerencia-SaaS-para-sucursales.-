@@ -54,8 +54,19 @@ async function main() {
     // Usamos uno generico como "CAJA CARTON" (es un producto-no-comercial del catalogo)
     const busqueda = "CAJA CARTON";
     console.log("   Buscando:", busqueda);
+    // Esperar a que la respuesta del nuevo q llegue antes de inspeccionar la grilla.
+    const resp = page.waitForResponse(
+      (r) => r.url().includes("/api/sugerido?") && r.url().includes("q=CAJA"),
+      { timeout: 30000 }
+    );
     await page.fill('input[placeholder*="Buscar producto"]', busqueda);
-    await page.waitForTimeout(2000); // debounce + carga
+    const r = await resp;
+    console.log("   API status:", r.status());
+    try {
+      const j = await r.json();
+      console.log("   API total:", j.total, "items:", j.items?.length);
+    } catch {}
+    await page.waitForTimeout(1500); // que AG Grid pinte
 
     // Contar filas y ver si hay badge CATALOGO
     const filasInfo = await page.$$eval(
