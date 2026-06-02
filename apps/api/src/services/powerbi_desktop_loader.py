@@ -57,7 +57,9 @@ def _ejecutar_script(dax: str, timeout: int = 240) -> dict:
 def sync_desktop(db: Session, dax: str | None = None) -> dict:
     """Lee la tabla del sugerido desde el Power BI Desktop abierto y reemplaza el snapshot."""
     consulta = dax or settings.powerbi_dax_query
-    data = _ejecutar_script(consulta)
+    # Timeout amplio: el calculo de las medidas (Sugerido, Stock Activo, etc.) puede
+    # tardar varios minutos en cold start de Power BI.
+    data = _ejecutar_script(consulta, timeout=600)
 
     if not data.get("ok"):
         error = data.get("error") or "No se pudo leer Power BI Desktop."
