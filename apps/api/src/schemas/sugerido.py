@@ -109,6 +109,11 @@ class SugeridoFiltros(BaseModel):
     proveedor: str | None = None
     solo_pedir: bool = True
     solo_nacionales: bool = False  # excluye los importados (es_importado=True)
+    # Vista del proceso de compras. "todas" = sin separar (default).
+    # "sucursales" = compra directa de sucursal (Abastece CD!=Si Y sucursal != CD REPUESTOS).
+    # "cd" = compra del CD (sucursal_id=CD REPUESTOS).
+    # "distribucion" = traslado CD -> sucursales (Abastece CD = Si).
+    vista: str = "todas"
 
 
 class ExportRequest(BaseModel):

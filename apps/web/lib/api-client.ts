@@ -66,6 +66,7 @@ function filtrosToParams(f: SugeridoFiltros): URLSearchParams {
   if (f.proveedor) p.set("proveedor", f.proveedor);
   p.set("solo_pedir", String(f.solo_pedir ?? true));
   if (f.solo_nacionales) p.set("solo_nacionales", "true");
+  if (f.vista && f.vista !== "todas") p.set("vista", f.vista);
   return p;
 }
 

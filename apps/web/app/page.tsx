@@ -11,16 +11,31 @@ import { TablaSugerido, type TablaSugeridoHandle } from "@/components/tabla-suge
 import { ConfigurarColumnas } from "@/components/configurar-columnas";
 import { ModalSugerenciaManual } from "@/components/modal-sugerencia-manual";
 import { api } from "@/lib/api-client";
+import { getEsAdmin } from "@/lib/auth";
 import { KEYS_POR_DEFECTO } from "@/lib/columnas";
 import { formatoNumero } from "@/lib/formato";
 import type { Sucursal, SugeridoFiltros, SugeridoKpis, SugeridoRow } from "@/lib/types";
+
+type Vista = NonNullable<SugeridoFiltros["vista"]>;
+const VISTAS: { id: Vista; label: string; hint: string }[] = [
+  { id: "todas", label: "Todas", hint: "Todo el sugerido sin distinguir el proceso" },
+  { id: "sucursales", label: "Compra sucursal", hint: "Lo que cada local pide directo al proveedor" },
+  { id: "cd", label: "Compra CD", hint: "Lo que el CD le pide al proveedor para tener en stock central" },
+  { id: "distribucion", label: "Distribución CD → Sucursales", hint: "Lo que el CD reparte a las sucursales (traslado interno)" },
+];
 
 const LS_COLUMNAS = "sugerido_columnas_visibles";
 
 export default function DashboardPage() {
   const router = useRouter();
 
-  const [filtros, setFiltros] = useState<SugeridoFiltros>({ solo_pedir: true });
+  const [filtros, setFiltros] = useState<SugeridoFiltros>({ solo_pedir: true, vista: "todas" });
+  const [esAdmin, setEsAdmin] = useState(false);
+
+  // Las tabs de vista solo se muestran a admin. Detectamos al montar.
+  useEffect(() => {
+    setEsAdmin(getEsAdmin());
+  }, []);
   const [rows, setRows] = useState<SugeridoRow[]>([]);
   const [kpis, setKpis] = useState<SugeridoKpis | null>(null);
   const [total, setTotal] = useState(0);
@@ -155,6 +170,28 @@ export default function DashboardPage() {
           </Button>
         </div>
       </div>
+
+      {esAdmin && (
+        <div className="flex flex-wrap gap-1 border-b border-ink-200">
+          {VISTAS.map((v) => {
+            const activa = (filtros.vista ?? "todas") === v.id;
+            return (
+              <button
+                key={v.id}
+                onClick={() => setFiltros((f) => ({ ...f, vista: v.id }))}
+                title={v.hint}
+                className={`flex items-center gap-1.5 border-b-2 px-3 py-2 text-[13px] font-medium transition-colors ${
+                  activa
+                    ? "border-accent-700 text-ink-900"
+                    : "border-transparent text-ink-500 hover:text-ink-900"
+                }`}
+              >
+                {v.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       <KpiCards kpis={kpis} cargando={cargando} />
 

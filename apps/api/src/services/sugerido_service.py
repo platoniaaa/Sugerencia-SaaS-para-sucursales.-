@@ -59,6 +59,25 @@ def _apply_filters(stmt, f: SugeridoFiltros):
     if f.solo_nacionales and not busqueda:
         # Excluye importados. es_importado=False o NULL se considera nacional.
         stmt = stmt.where(or_(Sugerido.es_importado.is_(False), Sugerido.es_importado.is_(None)))
+    # Vista del proceso de compras. La busqueda global (q) las anula igual que pedir/nacionales.
+    if not busqueda:
+        vista = (f.vista or "todas").lower()
+        if vista == "sucursales":
+            # Compra directa de sucursal: NO se abastece via CD Y la sucursal no es el CD.
+            stmt = stmt.where(Sugerido.sucursal_id != "CD REPUESTOS")
+            stmt = stmt.where(
+                or_(
+                    Sugerido.abastece_cd.is_(None),
+                    ~func.lower(Sugerido.abastece_cd).in_(("si", "sí")),
+                )
+            )
+        elif vista == "cd":
+            # Compra del CD: lo que el CD le pide al proveedor.
+            stmt = stmt.where(Sugerido.sucursal_id == "CD REPUESTOS")
+        elif vista == "distribucion":
+            # Distribucion / traslado del CD a las sucursales (no incluye el CD mismo).
+            stmt = stmt.where(Sugerido.sucursal_id != "CD REPUESTOS")
+            stmt = stmt.where(func.lower(Sugerido.abastece_cd).in_(("si", "sí")))
     return stmt
 
 

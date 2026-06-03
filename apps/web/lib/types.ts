@@ -86,6 +86,7 @@ export interface SugeridoFiltros {
   proveedor?: string;
   solo_pedir?: boolean;
   solo_nacionales?: boolean;
+  vista?: "todas" | "sucursales" | "cd" | "distribucion";
 }
 
 export interface Sucursal {
