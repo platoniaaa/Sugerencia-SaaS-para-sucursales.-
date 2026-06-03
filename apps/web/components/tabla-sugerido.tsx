@@ -18,8 +18,6 @@ interface Props {
 export interface TablaSugeridoHandle {
   /** IDs de las filas visibles tras filtros y orden del AG Grid. Solo del BI (id > 0). */
   obtenerIdsVisibles(): number[];
-  /** true si el usuario aplico algun filtro de columna en la tabla. */
-  hayFiltrosTabla(): boolean;
 }
 
 function ProductoCelda(p: { value: unknown; data?: SugeridoRow }) {
@@ -118,7 +116,6 @@ export const TablaSugerido = forwardRef<TablaSugeridoHandle, Props>(function Tab
         });
         return ids;
       },
-      hayFiltrosTabla: () => Boolean(gridRef.current?.api?.isAnyFilterPresent()),
     }),
     []
   );

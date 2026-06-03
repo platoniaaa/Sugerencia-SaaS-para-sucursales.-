@@ -110,12 +110,16 @@ export default function DashboardPage() {
   const exportar = async () => {
     setExportando(true);
     try {
-      // Si el usuario aplico filtros de columna en la tabla, recolectamos los IDs
-      // visibles (respeta el orden y los filtros del AG Grid). Si no, el backend
-      // exporta usando solo los filtros server-side.
-      const handle = tablaRef.current;
-      const ids = handle?.hayFiltrosTabla() ? handle.obtenerIdsVisibles() : undefined;
-      await api.exportExcel(filtros, colsVisibles, "-total_sugerido_suc", ids);
+      // Recolectamos los IDs visibles del AG Grid (respeta cualquier filtro de
+      // columna que el usuario haya aplicado en la tabla). Si la grilla aun no
+      // esta montada, ids queda vacio y el backend usa los filtros server-side.
+      const ids = tablaRef.current?.obtenerIdsVisibles() ?? [];
+      await api.exportExcel(
+        filtros,
+        colsVisibles,
+        "-total_sugerido_suc",
+        ids.length ? ids : undefined
+      );
     } catch (e) {
       alert(e instanceof Error ? e.message : "No se pudo exportar");
     } finally {
