@@ -112,8 +112,14 @@ class SugeridoFiltros(BaseModel):
 
 
 class ExportRequest(BaseModel):
-    """Body para exportar a Excel: filtros + columnas visibles."""
+    """Body para exportar a Excel: filtros + columnas visibles.
+
+    Si vienen `ids`, se exportan exactamente esas filas (preserva los filtros de
+    columna que el usuario aplico en la tabla AG Grid del cliente). Si no vienen,
+    se usan los `filtros` server-side.
+    """
 
     filtros: SugeridoFiltros = Field(default_factory=SugeridoFiltros)
     columnas: list[str] = Field(default_factory=list)  # vacio = columnas por defecto
     sort: str | None = None
+    ids: list[int] | None = None  # IDs exactos a exportar (opcional)

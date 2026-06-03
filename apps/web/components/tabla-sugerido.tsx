@@ -1,9 +1,9 @@
 "use client";
 
-import { useMemo, useRef } from "react";
+import { forwardRef, useImperativeHandle, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { AgGridReact } from "ag-grid-react";
-import type { ColDef, GridReadyEvent, RowClickedEvent } from "ag-grid-community";
+import type { ColDef, GridReadyEvent, IRowNode, RowClickedEvent } from "ag-grid-community";
 import { COLUMNAS, type DefColumna } from "@/lib/columnas";
 import { formatoCLP, formatoNumero } from "@/lib/formato";
 import type { SugeridoRow } from "@/lib/types";
@@ -13,6 +13,13 @@ interface Props {
   rows: SugeridoRow[];
   columnasVisibles: string[];
   onRowClick: (row: SugeridoRow) => void;
+}
+
+export interface TablaSugeridoHandle {
+  /** IDs de las filas visibles tras filtros y orden del AG Grid. Solo del BI (id > 0). */
+  obtenerIdsVisibles(): number[];
+  /** true si el usuario aplico algun filtro de columna en la tabla. */
+  hayFiltrosTabla(): boolean;
 }
 
 function ProductoCelda(p: { value: unknown; data?: SugeridoRow }) {
@@ -91,9 +98,30 @@ function colDef(def: DefColumna): ColDef {
   return base;
 }
 
-export function TablaSugerido({ rows, columnasVisibles, onRowClick }: Props) {
+export const TablaSugerido = forwardRef<TablaSugeridoHandle, Props>(function TablaSugerido(
+  { rows, columnasVisibles, onRowClick },
+  ref
+) {
   const gridRef = useRef<AgGridReact<SugeridoRow>>(null);
   const router = useRouter();
+
+  useImperativeHandle(
+    ref,
+    () => ({
+      obtenerIdsVisibles: () => {
+        const api = gridRef.current?.api;
+        if (!api) return [];
+        const ids: number[] = [];
+        api.forEachNodeAfterFilterAndSort((node: IRowNode<SugeridoRow>) => {
+          const id = node.data?.id;
+          if (typeof id === "number" && id > 0) ids.push(id);
+        });
+        return ids;
+      },
+      hayFiltrosTabla: () => Boolean(gridRef.current?.api?.isAnyFilterPresent()),
+    }),
+    []
+  );
 
   const columnDefs = useMemo<ColDef[]>(() => {
     // Mantener el orden definido en COLUMNAS, solo las visibles.
@@ -162,4 +190,4 @@ export function TablaSugerido({ rows, columnasVisibles, onRowClick }: Props) {
       />
     </div>
   );
-}
+});

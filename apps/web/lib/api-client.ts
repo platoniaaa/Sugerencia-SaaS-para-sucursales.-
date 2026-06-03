@@ -265,8 +265,17 @@ export const api = {
     if (!res.ok && res.status !== 204) throw new Error("No se pudo eliminar");
   },
 
-  async exportExcel(filtros: SugeridoFiltros, columnas: string[], sort?: string): Promise<void> {
-    return descargar("/api/sugerido/export-excel", { filtros, columnas, sort }, "sugerido.xlsx");
+  async exportExcel(
+    filtros: SugeridoFiltros,
+    columnas: string[],
+    sort?: string,
+    ids?: number[]
+  ): Promise<void> {
+    return descargar(
+      "/api/sugerido/export-excel",
+      { filtros, columnas, sort, ids: ids && ids.length ? ids : null },
+      "sugerido.xlsx"
+    );
   },
 
   async powerbiEstado(): Promise<{ configurado: boolean }> {

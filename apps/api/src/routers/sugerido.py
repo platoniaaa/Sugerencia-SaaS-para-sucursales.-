@@ -83,8 +83,12 @@ def detalle(producto: str, sucursal_id: str, db: Session = Depends(get_db)):
 
 @router.post("/export-excel")
 def export_excel(req: ExportRequest, db: Session = Depends(get_db)):
-    # Trae todas las filas que cumplen el filtro (sin paginar) para el Excel.
-    items, _ = sugerido_service.listar(db, req.filtros, page=1, limit=100000, sort=req.sort)
+    # Si vienen IDs, exportamos exactamente esas filas (preserva los filtros que el
+    # usuario aplico en las columnas del AG Grid). Sino, usamos filtros server-side.
+    if req.ids:
+        items = sugerido_service.listar_por_ids(db, req.ids)
+    else:
+        items, _ = sugerido_service.listar(db, req.filtros, page=1, limit=100000, sort=req.sort)
     contenido = excel_export.generar_excel(items, req.columnas)
     nombre = excel_export.nombre_archivo()
     return StreamingResponse(

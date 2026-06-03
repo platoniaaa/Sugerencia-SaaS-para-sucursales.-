@@ -1,13 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { BarChart3, ChevronDown, Columns3, Download, Plus, RefreshCw } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { KpiCards } from "@/components/kpi-cards";
 import { GraficosDashboard } from "@/components/graficos-dashboard";
 import { FiltrosSugerido } from "@/components/filtros-sugerido";
-import { TablaSugerido } from "@/components/tabla-sugerido";
+import { TablaSugerido, type TablaSugeridoHandle } from "@/components/tabla-sugerido";
 import { ConfigurarColumnas } from "@/components/configurar-columnas";
 import { ModalSugerenciaManual } from "@/components/modal-sugerencia-manual";
 import { api } from "@/lib/api-client";
@@ -33,6 +33,10 @@ export default function DashboardPage() {
   const [colsVisibles, setColsVisibles] = useState<string[]>(KEYS_POR_DEFECTO);
   const [modalCols, setModalCols] = useState(false);
   const [modalManual, setModalManual] = useState(false);
+
+  // Ref para recolectar IDs visibles de la grilla cuando se exporta con filtros
+  // de columna activos (AG Grid los maneja del lado cliente).
+  const tablaRef = useRef<TablaSugeridoHandle>(null);
   const [exportando, setExportando] = useState(false);
   const [mostrarGraficos, setMostrarGraficos] = useState(false);
 
@@ -106,7 +110,12 @@ export default function DashboardPage() {
   const exportar = async () => {
     setExportando(true);
     try {
-      await api.exportExcel(filtros, colsVisibles, "-total_sugerido_suc");
+      // Si el usuario aplico filtros de columna en la tabla, recolectamos los IDs
+      // visibles (respeta el orden y los filtros del AG Grid). Si no, el backend
+      // exporta usando solo los filtros server-side.
+      const handle = tablaRef.current;
+      const ids = handle?.hayFiltrosTabla() ? handle.obtenerIdsVisibles() : undefined;
+      await api.exportExcel(filtros, colsVisibles, "-total_sugerido_suc", ids);
     } catch (e) {
       alert(e instanceof Error ? e.message : "No se pudo exportar");
     } finally {
@@ -173,6 +182,7 @@ export default function DashboardPage() {
       )}
 
       <TablaSugerido
+        ref={tablaRef}
         rows={rows}
         columnasVisibles={colsVisibles}
         onRowClick={(r) =>

@@ -383,6 +383,32 @@ def unidades_por_par(
     return out
 
 
+def listar_por_ids(db: Session, ids: list[int]) -> list[dict]:
+    """Devuelve las filas con esos IDs en formato dict (compatible con excel_export).
+
+    Solo aplica a filas del sugerido del BI (id > 0). Las filas sinteticas de
+    catalogo/manuales tienen IDs negativos y no se incluyen aqui: ese caso es
+    raro en exports y agrega complejidad sin valor para el comprador.
+    """
+    if not ids:
+        return []
+    ids_validos = [i for i in ids if i > 0]
+    if not ids_validos:
+        return []
+    rows = list(db.scalars(select(Sugerido).where(Sugerido.id.in_(ids_validos))).all())
+    # Preserva el orden enviado por el frontend (el del AG Grid, con sort visual).
+    by_id = {r.id: r for r in rows}
+    items: list[dict] = []
+    for i in ids_validos:
+        s = by_id.get(i)
+        if not s:
+            continue
+        d = {c.name: getattr(s, c.name) for c in Sugerido.__table__.columns}
+        d["origen"] = "sugerido"
+        items.append(d)
+    return items
+
+
 def detalle(db: Session, producto: str, sucursal_id: str) -> Sugerido | None:
     stmt = select(Sugerido).where(
         Sugerido.producto == producto, Sugerido.sucursal_id == sucursal_id
