@@ -14,6 +14,7 @@ import { api } from "@/lib/api-client";
 import { getEsAdmin } from "@/lib/auth";
 import { KEYS_POR_DEFECTO } from "@/lib/columnas";
 import { formatoNumero } from "@/lib/formato";
+import { STORAGE_KEYS, guardar, leer } from "@/lib/persistencia-dashboard";
 import type { Sucursal, SugeridoFiltros, SugeridoKpis, SugeridoRow } from "@/lib/types";
 
 type Vista = NonNullable<SugeridoFiltros["vista"]>;
@@ -26,10 +27,36 @@ const VISTAS: { id: Vista; label: string; hint: string }[] = [
 
 const LS_COLUMNAS = "sugerido_columnas_visibles";
 
+const FILTROS_DEFAULT: SugeridoFiltros = { solo_pedir: true, vista: "todas" };
+
 export default function DashboardPage() {
   const router = useRouter();
 
-  const [filtros, setFiltros] = useState<SugeridoFiltros>({ solo_pedir: true, vista: "todas" });
+  // Lazy init: leemos localStorage (namespaced por email) ANTES del primer render
+  // para que el efecto de fetch arranque ya con los filtros buenos. Si guardáramos
+  // dentro de un useEffect haríamos 2 fetches (uno con defaults, otro con
+  // restaurados).
+  const [filtros, setFiltrosRaw] = useState<SugeridoFiltros>(() =>
+    leer<SugeridoFiltros>(STORAGE_KEYS.filtros, FILTROS_DEFAULT)
+  );
+
+  // Wrapper de setFiltros que persiste sincrónicamente. Si el usuario filtra y
+  // navega al detalle en <300ms (más rápido que el debounce de fetch), igual
+  // se guarda. Cubre setter como objeto o como función.
+  const setFiltros: React.Dispatch<React.SetStateAction<SugeridoFiltros>> = useCallback(
+    (updater) => {
+      setFiltrosRaw((prev) => {
+        const nuevo =
+          typeof updater === "function"
+            ? (updater as (p: SugeridoFiltros) => SugeridoFiltros)(prev)
+            : updater;
+        guardar(STORAGE_KEYS.filtros, nuevo);
+        return nuevo;
+      });
+    },
+    []
+  );
+
   const [esAdmin, setEsAdmin] = useState(false);
 
   // Las tabs de vista solo se muestran a admin. Detectamos al montar.
@@ -226,6 +253,7 @@ export default function DashboardPage() {
         ref={tablaRef}
         rows={rows}
         columnasVisibles={colsVisibles}
+        vista={filtros.vista ?? "todas"}
         onRowClick={(r) =>
           router.push(
             `/producto/${encodeURIComponent(r.producto)}?sucursal=${encodeURIComponent(

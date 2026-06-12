@@ -56,10 +56,15 @@ export function FiltrosSugerido({ filtros, onChange }: Props) {
       {hayCambios && (
         <button
           onClick={() =>
+            // Reset completo: incluye vista (preserva el comportamiento de "Limpiar")
+            // y no sobreescribe campos que el dashboard puede haber seteado por otro
+            // lado (sucursales, abc, etc.) — los borramos también porque "Limpiar"
+            // es eso, volver al estado inicial.
             onChange({
               q: "",
               solo_pedir: true,
               solo_nacionales: false,
+              vista: "todas",
             })
           }
           className="flex items-center gap-1 rounded-sm px-2 py-1.5 text-[12px] text-ink-500 hover:bg-ink-100 hover:text-ink-800"

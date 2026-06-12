@@ -1,17 +1,32 @@
 "use client";
 
-import { forwardRef, useImperativeHandle, useMemo, useRef } from "react";
+import { forwardRef, useEffect, useImperativeHandle, useMemo, useRef } from "react";
 import { useRouter } from "next/navigation";
 import { AgGridReact } from "ag-grid-react";
-import type { ColDef, GridReadyEvent, IRowNode, RowClickedEvent } from "ag-grid-community";
+import type {
+  ColDef,
+  ColumnState,
+  FirstDataRenderedEvent,
+  GridReadyEvent,
+  IRowNode,
+  RowClickedEvent,
+} from "ag-grid-community";
 import { COLUMNAS, type DefColumna } from "@/lib/columnas";
 import { formatoCLP, formatoNumero } from "@/lib/formato";
-import type { SugeridoRow } from "@/lib/types";
+import { STORAGE_KEYS, guardar, leer } from "@/lib/persistencia-dashboard";
+import type { SugeridoFiltros, SugeridoRow } from "@/lib/types";
 import { FiltroMultiSelect } from "@/components/filtro-multiselect";
+
+type Vista = NonNullable<SugeridoFiltros["vista"]>;
 
 interface Props {
   rows: SugeridoRow[];
   columnasVisibles: string[];
+  /**
+   * Vista activa (todas/sucursales/cd/distribucion). El filter model se guarda
+   * por vista porque sus columnas/valores no son iguales entre tabs.
+   */
+  vista: Vista;
   onRowClick: (row: SugeridoRow) => void;
 }
 
@@ -61,14 +76,10 @@ function colDef(def: DefColumna): ColDef {
     pinned: def.pin,
     sortable: true,
     resizable: true,
-    // Filtro custom multi-select (estilo Excel / D365) en TODAS las columnas — ver
-    // defaultColDef más abajo. Aquí no se sobreescribe.
     minWidth: def.tipo === "texto" ? 140 : 110,
     flex: def.key === "descripcion" ? 2 : undefined,
   };
 
-  // Para la columna "producto" agregamos un badge "Catálogo" cuando origen === "catalogo".
-  // AG Grid >= 32 escapa strings desde cellRenderer; hay que devolver JSX para HTML real.
   if (def.key === "producto") {
     base.cellRenderer = ProductoCelda;
   }
@@ -96,12 +107,27 @@ function colDef(def: DefColumna): ColDef {
   return base;
 }
 
+type FilterModelByVista = Record<string, Record<string, unknown>>;
+type FilterModel = Record<string, unknown>;
+
 export const TablaSugerido = forwardRef<TablaSugeridoHandle, Props>(function TablaSugerido(
-  { rows, columnasVisibles, onRowClick },
+  { rows, columnasVisibles, vista, onRowClick },
   ref
 ) {
   const gridRef = useRef<AgGridReact<SugeridoRow>>(null);
   const router = useRouter();
+
+  // Persistencia:
+  // - `restoredRef`: pasa a true tras la primera restauración. Antes de eso,
+  //   ignoramos los eventos del grid (algunos disparan durante setup interno).
+  // - `aplicandoRef`: true mientras NOSOTROS llamamos setFilterModel/applyColumnState
+  //   para que no se persistan los cambios derivados de esa restauración.
+  // - `vistaRef`: vista activa al momento del último evento (refleja la prop
+  //   sin requerir cierre fresco en los handlers).
+  const restoredRef = useRef(false);
+  const aplicandoRef = useRef(false);
+  const vistaRef = useRef<Vista>(vista);
+  const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useImperativeHandle(
     ref,
@@ -121,7 +147,6 @@ export const TablaSugerido = forwardRef<TablaSugeridoHandle, Props>(function Tab
   );
 
   const columnDefs = useMemo<ColDef[]>(() => {
-    // Mantener el orden definido en COLUMNAS, solo las visibles.
     return COLUMNAS.filter((c) => columnasVisibles.includes(c.key as string)).map(colDef);
   }, [columnasVisibles]);
 
@@ -131,15 +156,121 @@ export const TablaSugerido = forwardRef<TablaSugeridoHandle, Props>(function Tab
       resizable: true,
       suppressHeaderMenuButton: false,
       filter: FiltroMultiSelect,
-      // Solo la pestaña de filtro (sin las otras del menú por defecto) → al clickear
-      // el icono se abre directo el multiselect.
       menuTabs: ["filterMenuTab"],
     }),
     []
   );
 
+  // Al cambiar la vista activa, re-aplicar el filter model guardado para
+  // esa vista (puede ser null → AG Grid limpia los filtros).
+  useEffect(() => {
+    vistaRef.current = vista;
+    const api = gridRef.current?.api;
+    if (!api || !restoredRef.current) return;
+    const all = leer<FilterModelByVista>(STORAGE_KEYS.gridFilter, {});
+    const model = all[vista] ?? null;
+    aplicandoRef.current = true;
+    try {
+      api.setFilterModel(model);
+    } catch {
+      /* setFilterModel puede rechazar valores incompatibles: ignoramos */
+    }
+    aplicandoRef.current = false;
+  }, [vista]);
+
   const onGridReady = (e: GridReadyEvent) => {
+    // Column state (sort + orden + width) no depende de filas — se restaura ahora.
+    aplicandoRef.current = true;
+    try {
+      const cols = leer<ColumnState[] | null>(STORAGE_KEYS.gridCols, null);
+      if (cols && Array.isArray(cols) && cols.length > 0) {
+        e.api.applyColumnState({ state: cols, applyOrder: true });
+      }
+    } catch {
+      /* state incompatible (cambio columnas visibles, etc.): ignoramos */
+    }
+    aplicandoRef.current = false;
     e.api.sizeColumnsToFit();
+  };
+
+  const onFirstDataRendered = (e: FirstDataRenderedEvent) => {
+    // El filter model del multiselect necesita rowData presente para preseleccionar
+    // valores → se restaura recién acá.
+    aplicandoRef.current = true;
+    try {
+      const all = leer<FilterModelByVista>(STORAGE_KEYS.gridFilter, {});
+      const model = all[vistaRef.current] ?? null;
+      if (model) e.api.setFilterModel(model);
+      const page = leer<number>(STORAGE_KEYS.gridPage, 0);
+      if (typeof page === "number" && page > 0) {
+        e.api.paginationGoToPage(page);
+      }
+    } catch {
+      /* noop */
+    }
+    aplicandoRef.current = false;
+    restoredRef.current = true;
+  };
+
+  // Cada vez que cambia rowData (sync, cambio vista, refresh), AG Grid puede
+  // descartar valores del filter multiselect que ya no existan. Re-aplicar el
+  // modelo guardado de la vista actual.
+  const onRowDataUpdated = () => {
+    const api = gridRef.current?.api;
+    if (!api || !restoredRef.current) return;
+    aplicandoRef.current = true;
+    try {
+      const all = leer<FilterModelByVista>(STORAGE_KEYS.gridFilter, {});
+      const model = all[vistaRef.current] ?? null;
+      api.setFilterModel(model);
+    } catch {
+      /* noop */
+    }
+    aplicandoRef.current = false;
+  };
+
+  // Eventos que persisten cambios del usuario:
+
+  const onFilterChanged = () => {
+    const api = gridRef.current?.api;
+    if (!api || !restoredRef.current || aplicandoRef.current) return;
+    try {
+      const all = leer<FilterModelByVista>(STORAGE_KEYS.gridFilter, {});
+      const model = (api.getFilterModel() ?? {}) as FilterModel;
+      all[vistaRef.current] = model;
+      guardar(STORAGE_KEYS.gridFilter, all);
+    } catch {
+      /* noop */
+    }
+  };
+
+  const persistirColumnState = () => {
+    const api = gridRef.current?.api;
+    if (!api || !restoredRef.current || aplicandoRef.current) return;
+    try {
+      guardar(STORAGE_KEYS.gridCols, api.getColumnState());
+    } catch {
+      /* noop */
+    }
+  };
+
+  const onSortChanged = persistirColumnState;
+  const onColumnMoved = persistirColumnState;
+
+  const onColumnResized = () => {
+    if (!restoredRef.current || aplicandoRef.current) return;
+    if (resizeTimerRef.current) clearTimeout(resizeTimerRef.current);
+    resizeTimerRef.current = setTimeout(persistirColumnState, 200);
+  };
+
+  const onPaginationChanged = () => {
+    const api = gridRef.current?.api;
+    if (!api || !restoredRef.current || aplicandoRef.current) return;
+    try {
+      guardar(STORAGE_KEYS.gridPage, api.paginationGetCurrentPage());
+    } catch {
+      /* noop */
+    }
   };
 
   // El popup del menu/filtro se monta en body para poder voltearse hacia arriba
@@ -158,9 +289,15 @@ export const TablaSugerido = forwardRef<TablaSugeridoHandle, Props>(function Tab
         defaultColDef={defaultColDef}
         popupParent={popupParent}
         onGridReady={onGridReady}
+        onFirstDataRendered={onFirstDataRendered}
+        onRowDataUpdated={onRowDataUpdated}
+        onFilterChanged={onFilterChanged}
+        onSortChanged={onSortChanged}
+        onColumnMoved={onColumnMoved}
+        onColumnResized={onColumnResized}
+        onPaginationChanged={onPaginationChanged}
         onRowClicked={(e: RowClickedEvent<SugeridoRow>) => {
           if (!e.data) return;
-          // Manual-pura: producto sin sugerido del BI. Lo mandamos al detalle del catalogo.
           if (e.data.origen === "catalogo" || e.data.origen === "manual") {
             router.push(`/catalogo/${encodeURIComponent(e.data.producto)}`);
             return;
