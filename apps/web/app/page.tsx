@@ -120,13 +120,11 @@ export default function DashboardPage() {
     setCargando(true);
     setError(null);
     try {
-      const [page, k] = await Promise.all([
-        api.sugerido(filtros, { limit: 5000, sort: "-total_sugerido_suc" }),
-        api.kpis(filtros),
-      ]);
+      // KPIs ya no se piden al backend: los calcula la grilla sobre las filas
+      // visibles tras los filtros de columna (ver onKpisVisiblesChange abajo).
+      const page = await api.sugerido(filtros, { limit: 5000, sort: "-total_sugerido_suc" });
       setRows(page.items);
       setTotal(page.total);
-      setKpis(k);
     } catch (e) {
       setError(
         e instanceof Error
@@ -254,6 +252,7 @@ export default function DashboardPage() {
         rows={rows}
         columnasVisibles={colsVisibles}
         vista={filtros.vista ?? "todas"}
+        onKpisVisiblesChange={(k) => setKpis(k)}
         onRowClick={(r) =>
           router.push(
             `/producto/${encodeURIComponent(r.producto)}?sucursal=${encodeURIComponent(

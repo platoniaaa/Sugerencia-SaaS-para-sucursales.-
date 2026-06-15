@@ -16,7 +16,7 @@ import { Check, Copy } from "lucide-react";
 import { COLUMNAS, type DefColumna } from "@/lib/columnas";
 import { formatoCLP, formatoNumero } from "@/lib/formato";
 import { STORAGE_KEYS, guardar, leer } from "@/lib/persistencia-dashboard";
-import type { SugeridoFiltros, SugeridoRow } from "@/lib/types";
+import type { SugeridoFiltros, SugeridoKpis, SugeridoRow } from "@/lib/types";
 import { FiltroMultiSelect } from "@/components/filtro-multiselect";
 
 type Vista = NonNullable<SugeridoFiltros["vista"]>;
@@ -30,6 +30,12 @@ interface Props {
    */
   vista: Vista;
   onRowClick: (row: SugeridoRow) => void;
+  /**
+   * Se dispara cada vez que cambia el conjunto de filas visibles (filtros de
+   * columna, sort, rowData). El padre lo usa para refrescar los KPIs sobre las
+   * filas realmente visibles, no sobre el universo server-side.
+   */
+  onKpisVisiblesChange?: (kpis: SugeridoKpis, totalVisibles: number) => void;
 }
 
 export interface TablaSugeridoHandle {
@@ -113,7 +119,7 @@ type FilterModelByVista = Record<string, Record<string, unknown>>;
 type FilterModel = Record<string, unknown>;
 
 export const TablaSugerido = forwardRef<TablaSugeridoHandle, Props>(function TablaSugerido(
-  { rows, columnasVisibles, vista, onRowClick },
+  { rows, columnasVisibles, vista, onRowClick, onKpisVisiblesChange },
   ref
 ) {
   const gridRef = useRef<AgGridReact<SugeridoRow>>(null);
@@ -130,6 +136,49 @@ export const TablaSugerido = forwardRef<TablaSugeridoHandle, Props>(function Tab
   const aplicandoRef = useRef(false);
   const vistaRef = useRef<Vista>(vista);
   const resizeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  // Ref a la callback de KPIs para que `notificarKpis` lea siempre la version
+  // mas reciente sin recrear el handler cada render.
+  const onKpisRef = useRef(onKpisVisiblesChange);
+  useEffect(() => {
+    onKpisRef.current = onKpisVisiblesChange;
+  }, [onKpisVisiblesChange]);
+
+  /**
+   * Suma KPIs sobre las filas visibles tras filtros de columna + sort del grid.
+   * Espeja la misma lógica que `kpis()` del backend: sum totales, distinct de
+   * producto y proveedor. Asi cuando el comprador filtra ABC=A en la columna,
+   * las tarjetas de arriba muestran exactamente lo que ve en la tabla.
+   */
+  const notificarKpis = () => {
+    const cb = onKpisRef.current;
+    if (!cb) return;
+    const api = gridRef.current?.api;
+    if (!api) return;
+    let totalSugerido = 0;
+    let valorTotal = 0;
+    const productos = new Set<string>();
+    const proveedores = new Set<string>();
+    let n = 0;
+    api.forEachNodeAfterFilterAndSort((node: IRowNode<SugeridoRow>) => {
+      const d = node.data;
+      if (!d) return;
+      n += 1;
+      if (typeof d.total_sugerido_suc === "number") totalSugerido += d.total_sugerido_suc;
+      if (typeof d.total_valor_sugerido_clp === "number") valorTotal += d.total_valor_sugerido_clp;
+      if (d.producto) productos.add(d.producto);
+      if (d.proveedor) proveedores.add(d.proveedor);
+    });
+    cb(
+      {
+        total_sugerido: totalSugerido,
+        valor_total_clp: valorTotal,
+        n_productos: productos.size,
+        n_proveedores: proveedores.size,
+      },
+      n
+    );
+  };
 
   // Context menu custom (AG Grid Community no incluye context menu nativo).
   // Posicion absoluta en pixeles del viewport. valor = lo que ve el usuario
@@ -220,6 +269,8 @@ export const TablaSugerido = forwardRef<TablaSugeridoHandle, Props>(function Tab
     }
     aplicandoRef.current = false;
     restoredRef.current = true;
+    // Primer cálculo de KPIs visibles (ya hay filas + filtros restaurados).
+    notificarKpis();
   };
 
   // Cada vez que cambia rowData (sync, cambio vista, refresh), AG Grid puede
@@ -237,13 +288,19 @@ export const TablaSugerido = forwardRef<TablaSugeridoHandle, Props>(function Tab
       /* noop */
     }
     aplicandoRef.current = false;
+    // El dataset cambió → recalcular KPIs sobre las filas visibles.
+    notificarKpis();
   };
 
   // Eventos que persisten cambios del usuario:
 
   const onFilterChanged = () => {
     const api = gridRef.current?.api;
-    if (!api || !restoredRef.current || aplicandoRef.current) return;
+    if (!api || !restoredRef.current) return;
+    // El usuario cambió un filtro de columna → recalcular KPIs siempre, no
+    // solo cuando persistimos (la restauración también dispara este evento).
+    notificarKpis();
+    if (aplicandoRef.current) return;
     try {
       const all = leer<FilterModelByVista>(STORAGE_KEYS.gridFilter, {});
       const model = (api.getFilterModel() ?? {}) as FilterModel;
