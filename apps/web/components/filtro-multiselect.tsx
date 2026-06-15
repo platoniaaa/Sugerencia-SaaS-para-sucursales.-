@@ -382,9 +382,17 @@ export function FiltroMultiSelect(props: CustomFilterProps) {
 
       <div className="min-h-0 flex-1 overflow-y-auto py-1">
         {visibleCap.length === 0 && (
-          <p className="px-2 py-4 text-center text-[12px] text-slate-400">
-            Sin coincidencias.
-          </p>
+          <div className="px-3 py-3 text-center text-[12px] text-slate-400">
+            <p>Sin coincidencias en esta vista.</p>
+            {busqueda.trim() && (
+              <p className="mt-2 leading-snug text-slate-500">
+                Si el producto debería estar, probá quitar los toggles de
+                arriba (<b>Solo pedir = Sí</b>, <b>Solo nacionales</b>) o usá
+                el <b>buscador grande</b> de la barra superior — busca en
+                toda la base e ignora esos filtros.
+              </p>
+            )}
+          </div>
         )}
         {visibleCap.map((v) => (
           <label
