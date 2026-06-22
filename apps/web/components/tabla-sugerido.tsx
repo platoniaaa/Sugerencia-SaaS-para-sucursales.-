@@ -163,7 +163,10 @@ export const TablaSugerido = forwardRef<TablaSugeridoHandle, Props>(function Tab
     const productos = new Set<string>();
     const proveedores = new Set<string>();
     let n = 0;
-    api.forEachNodeAfterFilterAndSort((node: IRowNode<SugeridoRow>) => {
+    // forEachNodeAfterFilter (no ...AndSort) porque con paginacion activa,
+    // AndSort solo recorre la pagina visible. Filter recorre TODAS las filas
+    // filtradas, que es lo que queremos para que los KPIs sean el total real.
+    api.forEachNodeAfterFilter((node: IRowNode<SugeridoRow>) => {
       const d = node.data;
       if (!d) return;
       n += 1;
@@ -198,7 +201,10 @@ export const TablaSugerido = forwardRef<TablaSugeridoHandle, Props>(function Tab
         const api = gridRef.current?.api;
         if (!api) return [];
         const ids: number[] = [];
-        api.forEachNodeAfterFilterAndSort((node: IRowNode<SugeridoRow>) => {
+        // Idem notificarKpis: con paginacion activa, AndSort solo iteraria la
+        // pagina actual. Filter recorre todas las filtradas; el orden del Excel
+        // lo aplica el backend con req.sort.
+        api.forEachNodeAfterFilter((node: IRowNode<SugeridoRow>) => {
           const id = node.data?.id;
           if (typeof id === "number" && id > 0) ids.push(id);
         });

@@ -201,6 +201,53 @@ def _fila_sintetica_manual(
     }
 
 
+def _aplicar_manuales_a_fila(d: dict, manual_unidades: int) -> None:
+    """Suma una sugerencia manual vigente a la fila dict del sugerido del BI.
+
+    Muta `d` in-place. Misma logica usada en `listar` y `listar_por_ids` para que
+    la grilla y el export devuelvan exactamente los mismos numeros.
+    """
+    if not manual_unidades:
+        return
+    base_total = float(d.get("total_sugerido_suc") or 0)
+    d["total_sugerido_suc"] = base_total + manual_unidades
+    base_compra = float(d.get("sugerido_compra_neto") or d.get("total_sugerido_suc") or 0)
+    d["sugerido_compra_neto"] = base_compra + manual_unidades
+    if d.get("costo_unitario"):
+        d["total_valor_sugerido_clp"] = (
+            float(d.get("total_valor_sugerido_clp") or 0)
+            + manual_unidades * float(d["costo_unitario"])
+        )
+    d["pedir"] = "Si"
+    d["pedir_flag"] = "Si"
+
+
+def _enriquecer_con_catalogo(items: list[dict], db: Session) -> None:
+    """Agrega campos del ProductoCatalogo que NO vienen del modelo Sugerido.
+
+    Hoy solo `reemplazos` (catalogo.reemplazo). Un solo SELECT por todos los
+    productos distintos de la lista. Muta `items` in-place.
+    """
+    if not items:
+        return
+    productos = {it.get("producto") for it in items if it.get("producto")}
+    if not productos:
+        return
+    rows = db.execute(
+        select(ProductoCatalogo.producto, ProductoCatalogo.reemplazo)
+        .where(ProductoCatalogo.producto.in_(productos))
+    ).all()
+    cat_map = {p: r for p, r in rows}
+    for it in items:
+        p = it.get("producto")
+        # Enriquecer solo si la fila no tiene reemplazo. El modelo Sugerido tiene
+        # la columna `reemplazos` pero el BI no la llena (siempre None), asi que
+        # la traemos del catalogo. Las filas de _row_desde_catalogo ya vienen con
+        # su propio valor; no las pisamos.
+        if p and not it.get("reemplazos"):
+            it["reemplazos"] = cat_map.get(p)
+
+
 def listar(
     db: Session, f: SugeridoFiltros, page: int = 1, limit: int = 50, sort: str | None = None
 ) -> tuple[list[dict], int]:
@@ -223,19 +270,7 @@ def listar(
         d["origen"] = "sugerido"
         par = (s.producto, s.sucursal_id)
         pares_en_sugerido.add(par)
-        manual = manuales.get(par, 0)
-        if manual:
-            base_total = float(d.get("total_sugerido_suc") or 0)
-            d["total_sugerido_suc"] = base_total + manual
-            base_compra = float(d.get("sugerido_compra_neto") or d.get("total_sugerido_suc") or 0)
-            d["sugerido_compra_neto"] = base_compra + manual
-            if d.get("costo_unitario"):
-                d["total_valor_sugerido_clp"] = (
-                    float(d.get("total_valor_sugerido_clp") or 0)
-                    + manual * float(d["costo_unitario"])
-                )
-            d["pedir"] = "Si"
-            d["pedir_flag"] = "Si"
+        _aplicar_manuales_a_fila(d, manuales.get(par, 0))
         items.append(d)
 
     # Filas sinteticas para pares (producto, sucursal) que estan SOLO en manuales
@@ -286,6 +321,11 @@ def listar(
             items.extend(rows_cat)
         except Exception:
             total_cat = 0
+
+    # Enriquecer con columnas del catalogo (reemplazos, etc.) que no viven en
+    # el modelo Sugerido. Las filas que ya vienen del catalogo o sinteticas no
+    # se tocan: el helper salta cuando ya hay 'reemplazos' en la fila.
+    _enriquecer_con_catalogo(items, db)
 
     return items, total + total_manuales_solas + total_cat
 
@@ -407,9 +447,10 @@ def unidades_por_par(
 def listar_por_ids(db: Session, ids: list[int]) -> list[dict]:
     """Devuelve las filas con esos IDs en formato dict (compatible con excel_export).
 
-    Solo aplica a filas del sugerido del BI (id > 0). Las filas sinteticas de
-    catalogo/manuales tienen IDs negativos y no se incluyen aqui: ese caso es
-    raro en exports y agrega complejidad sin valor para el comprador.
+    Aplica los mismos enriquecimientos que `listar`: suma de sugerencias manuales
+    vigentes y campos del catalogo (reemplazos). Solo procesa IDs del sugerido
+    del BI (id > 0); las filas sinteticas de catalogo/manuales tienen IDs
+    negativos y no se incluyen aqui (caso raro en exports).
     """
     if not ids:
         return []
@@ -417,6 +458,28 @@ def listar_por_ids(db: Session, ids: list[int]) -> list[dict]:
     if not ids_validos:
         return []
     rows = list(db.scalars(select(Sugerido).where(Sugerido.id.in_(ids_validos))).all())
+    if not rows:
+        return []
+
+    # Manuales vigentes solo de los pares (producto, sucursal) involucrados.
+    pares = {(r.producto, r.sucursal_id) for r in rows}
+    productos_unicos = {p for p, _ in pares}
+    stmt = (
+        select(
+            SugerenciaManual.producto,
+            SugerenciaManual.sucursal_id,
+            func.sum(SugerenciaManual.unidades).label("total"),
+        )
+        .where(SugerenciaManual.archivada.is_(False))
+        .where(SugerenciaManual.producto.in_(productos_unicos))
+        .group_by(SugerenciaManual.producto, SugerenciaManual.sucursal_id)
+    )
+    manuales = {
+        (p, s): int(t or 0)
+        for p, s, t in db.execute(stmt).all()
+        if t and int(t) > 0 and (p, s) in pares
+    }
+
     # Preserva el orden enviado por el frontend (el del AG Grid, con sort visual).
     by_id = {r.id: r for r in rows}
     items: list[dict] = []
@@ -426,7 +489,10 @@ def listar_por_ids(db: Session, ids: list[int]) -> list[dict]:
             continue
         d = {c.name: getattr(s, c.name) for c in Sugerido.__table__.columns}
         d["origen"] = "sugerido"
+        _aplicar_manuales_a_fila(d, manuales.get((s.producto, s.sucursal_id), 0))
         items.append(d)
+
+    _enriquecer_con_catalogo(items, db)
     return items
 
 

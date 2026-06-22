@@ -390,3 +390,38 @@ def test_cargar_sugerido_excel(client):
     r = client.get("/api/sugerido", params={"solo_pedir": True})
     assert r.json()["total"] == 1
     assert r.json()["items"][0]["producto"] == "NUEVO-1"
+
+
+def test_listar_por_ids_suma_manuales_y_enriquece_catalogo(db_session):
+    """El export por IDs debe devolver lo mismo que la grilla: suma de
+    sugerencias manuales vigentes y campo `reemplazos` del catalogo."""
+    from src.models import ProductoCatalogo, Sugerido, SugerenciaManual
+    from src.services.sugerido_service import listar_por_ids
+
+    # Catalogo con reemplazo declarado para el producto del seed.
+    db_session.add(ProductoCatalogo(
+        producto="20 BXO5W30AA", tenant_id="curifor",
+        glosa="ACEITE 5W30 LITRO FORD", costo=5000.0,
+        reemplazo="20 BXO5W30BB",
+    ))
+    # Sugerencia manual vigente: +15 unidades sobre la fila del seed (10 unidades).
+    db_session.add(SugerenciaManual(
+        tenant_id="curifor", producto="20 BXO5W30AA", sucursal_id="LINDEROS",
+        unidades=15, motivo="prueba", creado_por="test@curifor.com",
+    ))
+    db_session.commit()
+
+    sugerido_id = db_session.query(Sugerido).first().id
+    items = listar_por_ids(db_session, [sugerido_id])
+
+    assert len(items) == 1
+    item = items[0]
+    # 10 (BI) + 15 (manual) = 25
+    assert item["total_sugerido_suc"] == 25
+    # sugerido_compra_neto = 6 (BI) + 15 (manual) = 21
+    assert item["sugerido_compra_neto"] == 21
+    # valor = 50000 (BI) + 15 * 5000 = 125000
+    assert item["total_valor_sugerido_clp"] == 125000
+    assert item["pedir"] == "Si"
+    # Enriquecido desde el catalogo.
+    assert item["reemplazos"] == "20 BXO5W30BB"
