@@ -147,6 +147,19 @@ export const TablaSugerido = forwardRef<TablaSugeridoHandle, Props>(function Tab
     onKpisRef.current = onKpisVisiblesChange;
   }, [onKpisVisiblesChange]);
 
+  // Ref a las filas para que el handler imperativo (obtenerIdsVisibles) y los
+  // KPIs vean siempre el array actualizado sin recrearse en cada render.
+  const rowsRef = useRef(rows);
+  useEffect(() => {
+    rowsRef.current = rows;
+    // Cuando llegan filas nuevas (recarga del backend, cambio de vista),
+    // recalculamos KPIs. Si AG Grid aun no esta listo, onFirstDataRendered los
+    // calculara despues; mientras tanto, el primer pintado ya tiene un total
+    // correcto.
+    if (restoredRef.current) notificarKpis();
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [rows]);
+
   /**
    * Suma KPIs sobre las filas visibles tras filtros de columna + sort del grid.
    * Espeja la misma lógica que `kpis()` del backend: sum totales, distinct de
@@ -158,23 +171,41 @@ export const TablaSugerido = forwardRef<TablaSugeridoHandle, Props>(function Tab
     if (!cb) return;
     const api = gridRef.current?.api;
     if (!api) return;
+
+    // Decision: si NO hay filtros de columna activos, sumamos directamente desde
+    // el state `rows` (sin pasar por el grid). AG Grid con paginacion activa
+    // tiene quirks donde forEachNodeAfterFilter[AndSort] puede devolver solo la
+    // pagina visible en ciertos momentos (justo despues de cambiar columnDefs,
+    // p.ej. al agregar/quitar una columna). Esto produce KPIs incorrectos.
+    // Sumar desde `rows` evita toda esa dependencia con el ciclo interno de AG
+    // Grid y es lo correcto: cuando no hay filtros, los KPIs deben reflejar el
+    // total cargado en el state.
+    const filterModel = api.getFilterModel() ?? {};
+    const hayFiltros = Object.keys(filterModel).length > 0;
+
     let totalSugerido = 0;
     let valorTotal = 0;
     const productos = new Set<string>();
     const proveedores = new Set<string>();
     let n = 0;
-    // forEachNodeAfterFilter (no ...AndSort) porque con paginacion activa,
-    // AndSort solo recorre la pagina visible. Filter recorre TODAS las filas
-    // filtradas, que es lo que queremos para que los KPIs sean el total real.
-    api.forEachNodeAfterFilter((node: IRowNode<SugeridoRow>) => {
-      const d = node.data;
+
+    const acumular = (d: SugeridoRow | null | undefined) => {
       if (!d) return;
       n += 1;
       if (typeof d.total_sugerido_suc === "number") totalSugerido += d.total_sugerido_suc;
       if (typeof d.total_valor_sugerido_clp === "number") valorTotal += d.total_valor_sugerido_clp;
       if (d.producto) productos.add(d.producto);
       if (d.proveedor) proveedores.add(d.proveedor);
-    });
+    };
+
+    if (!hayFiltros) {
+      for (const r of rowsRef.current) acumular(r);
+    } else {
+      // Con filtros de columna activos, dejamos al grid aplicar el filtro y
+      // recolectamos las filas que lo pasan.
+      api.forEachNodeAfterFilter((node: IRowNode<SugeridoRow>) => acumular(node.data));
+    }
+
     cb(
       {
         total_sugerido: totalSugerido,
@@ -200,10 +231,19 @@ export const TablaSugerido = forwardRef<TablaSugeridoHandle, Props>(function Tab
       obtenerIdsVisibles: () => {
         const api = gridRef.current?.api;
         if (!api) return [];
+        // Misma idea que notificarKpis: si no hay filtros de columna activos,
+        // devolvemos los IDs directamente desde el state, sin depender del
+        // grid (que con paginacion + cambios recientes de columnas puede ser
+        // inconsistente). Con filtros activos, delegamos al grid.
+        const filterModel = api.getFilterModel() ?? {};
+        const hayFiltros = Object.keys(filterModel).length > 0;
         const ids: number[] = [];
-        // Idem notificarKpis: con paginacion activa, AndSort solo iteraria la
-        // pagina actual. Filter recorre todas las filtradas; el orden del Excel
-        // lo aplica el backend con req.sort.
+        if (!hayFiltros) {
+          for (const r of rowsRef.current) {
+            if (typeof r.id === "number" && r.id > 0) ids.push(r.id);
+          }
+          return ids;
+        }
         api.forEachNodeAfterFilter((node: IRowNode<SugeridoRow>) => {
           const id = node.data?.id;
           if (typeof id === "number" && id > 0) ids.push(id);
