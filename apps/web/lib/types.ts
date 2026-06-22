@@ -84,7 +84,10 @@ export interface SugeridoFiltros {
   abc?: string[];
   filtro1?: string[];
   tipo_origen?: string[];
+  /** Busqueda parcial por nombre de proveedor (legacy, ILIKE %valor%). */
   proveedor?: string;
+  /** Multi-seleccion exacta de proveedores (modal sugerencia manual). */
+  proveedores?: string[];
   solo_pedir?: boolean;
   solo_nacionales?: boolean;
   vista?: "todas" | "sucursales" | "cd" | "distribucion";

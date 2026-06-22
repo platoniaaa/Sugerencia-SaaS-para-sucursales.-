@@ -52,6 +52,8 @@ def _apply_filters(stmt, f: SugeridoFiltros):
         stmt = stmt.where(Sugerido.tipo_origen.in_(f.tipo_origen))
     if f.proveedor:
         stmt = stmt.where(Sugerido.proveedor.ilike(f"%{f.proveedor}%"))
+    if f.proveedores:
+        stmt = stmt.where(Sugerido.proveedor.in_(f.proveedores))
     # Cuando el usuario escribe un codigo o nombre, queremos que vea TODAS las
     # coincidencias aunque su sugerido del BI sea pedir=No. Si no, "no aparece".
     if f.solo_pedir and not busqueda:

@@ -107,6 +107,10 @@ class SugeridoFiltros(BaseModel):
     abc: list[str] = Field(default_factory=list)
     filtro1: list[str] = Field(default_factory=list)
     tipo_origen: list[str] = Field(default_factory=list)
+    # Filtro multi-proveedor (usado por el modal de sugerencia manual por grupo,
+    # entre otros). El campo legacy `proveedor: str` se mantiene por
+    # compatibilidad: hace un ILIKE %valor% (busqueda parcial).
+    proveedores: list[str] = Field(default_factory=list)
     proveedor: str | None = None
     solo_pedir: bool = True
     solo_nacionales: bool = False  # excluye los importados (es_importado=True)

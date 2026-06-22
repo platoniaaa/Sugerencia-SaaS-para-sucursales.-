@@ -19,7 +19,8 @@ interface Props {
   onClose: () => void;
   onGuardado: () => void;
   sucursales: Sucursal[];
-  marcas?: string[];
+  /** Lista de proveedores distintos (modo grupo). */
+  proveedores?: string[];
   productoInicial?: string;
   sucursalInicial?: string;
   /** Si es true, solo permite el modo individual (ej. desde la vista detalle). */
@@ -37,7 +38,7 @@ export function ModalSugerenciaManual({
   onClose,
   onGuardado,
   sucursales,
-  marcas = [],
+  proveedores = [],
   productoInicial,
   sucursalInicial,
   soloIndividual = false,
@@ -58,7 +59,7 @@ export function ModalSugerenciaManual({
 
   // Grupo
   const [gSucursales, setGSucursales] = useState<string[]>([]);
-  const [gMarcas, setGMarcas] = useState<string[]>([]);
+  const [gProveedores, setGProveedores] = useState<string[]>([]);
   const [gAbc, setGAbc] = useState<string[]>([]);
 
   // Grupo/Todos
@@ -86,7 +87,7 @@ export function ModalSugerenciaManual({
       setProducto(productoInicial ?? "");
       setSucursal(sucursalInicial ?? "");
       setGSucursales([]);
-      setGMarcas([]);
+      setGProveedores([]);
       setGAbc([]);
       setSoloPedir(true);
       setConteo(null);
@@ -119,12 +120,12 @@ export function ModalSugerenciaManual({
     if (modo === "grupo")
       return {
         sucursales: gSucursales,
-        filtro1: gMarcas,
+        proveedores: gProveedores,
         abc: gAbc,
         solo_pedir: soloPedir,
       };
     return {};
-  }, [modo, soloPedir, gSucursales, gMarcas, gAbc]);
+  }, [modo, soloPedir, gSucursales, gProveedores, gAbc]);
 
   // Conteo en vivo de productos afectados.
   useEffect(() => {
@@ -225,7 +226,7 @@ export function ModalSugerenciaManual({
 
   const tabs: { id: Modo; icon: React.ReactNode; label: string; sub: string }[] = [
     { id: "individual", icon: <Package size={16} />, label: "Individual", sub: "Un producto" },
-    { id: "grupo", icon: <Layers size={16} />, label: "Por grupo", sub: "Por sucursal / marca / ABC" },
+    { id: "grupo", icon: <Layers size={16} />, label: "Por grupo", sub: "Por sucursal / proveedor / ABC" },
     { id: "todos", icon: <Boxes size={16} />, label: "Todos", sub: "Todos los productos" },
   ];
 
@@ -341,12 +342,12 @@ export function ModalSugerenciaManual({
                 />
               </div>
               <div>
-                <Label>Marca</Label>
+                <Label>Proveedor</Label>
                 <MultiSelect
-                  label="Todas"
-                  opciones={marcas.map((m) => ({ value: m, label: m }))}
-                  seleccionados={gMarcas}
-                  onChange={setGMarcas}
+                  label="Todos"
+                  opciones={proveedores.map((p) => ({ value: p, label: p }))}
+                  seleccionados={gProveedores}
+                  onChange={setGProveedores}
                 />
               </div>
               <div>

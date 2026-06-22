@@ -70,7 +70,7 @@ export default function DashboardPage() {
   const [error, setError] = useState<string | null>(null);
 
   const [sucursales, setSucursales] = useState<Sucursal[]>([]);
-  const [marcas, setMarcas] = useState<string[]>([]);
+  const [proveedores, setProveedores] = useState<string[]>([]);
 
   const [colsVisibles, setColsVisibles] = useState<string[]>(KEYS_POR_DEFECTO);
   const [modalCols, setModalCols] = useState(false);
@@ -117,17 +117,17 @@ export default function DashboardPage() {
     localStorage.setItem(LS_COLUMNAS, JSON.stringify(colsVisibles));
   }, [colsVisibles]);
 
-  // Cargar catalogos una vez (sucursales + marcas).
+  // Cargar catalogos una vez (sucursales + proveedores).
   useEffect(() => {
     (async () => {
       try {
         const sucs = await api.sucursales();
         setSucursales(sucs);
-        // Marcas: distinct de un fetch amplio sin filtro.
+        // Proveedores: distinct de un fetch amplio sin filtro.
         const todo = await api.sugerido({ solo_pedir: false }, { limit: 5000 });
         const set = new Set<string>();
-        todo.items.forEach((r) => r.filtro1_final && set.add(r.filtro1_final));
-        setMarcas([...set].sort());
+        todo.items.forEach((r) => r.proveedor && set.add(r.proveedor));
+        setProveedores([...set].sort());
       } catch {
         /* el backend puede no estar arriba todavia */
       }
@@ -297,7 +297,7 @@ export default function DashboardPage() {
         onClose={() => setModalManual(false)}
         onGuardado={cargar}
         sucursales={sucursales}
-        marcas={marcas}
+        proveedores={proveedores}
       />
     </div>
   );
