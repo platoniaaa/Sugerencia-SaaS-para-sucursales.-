@@ -17,5 +17,8 @@ httpx>=0.28
 # funciona en cualquier version de Python (incluida 3.14) y en la nube.
 pg8000>=1.31
 
+# Chatbot via Gemini API (free tier de Google AI Studio).
+google-genai>=0.8
+
 # Solo para tests
 pytest>=8.3

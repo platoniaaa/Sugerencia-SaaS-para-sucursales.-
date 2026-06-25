@@ -418,4 +418,20 @@ export const api = {
     }
     return res.json();
   },
+
+  async chat(
+    pregunta: string,
+    historial: { role: "user" | "model"; text: string }[] = []
+  ): Promise<{ respuesta: string }> {
+    const res = await req("/api/chat", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ pregunta, historial }),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.detail ?? "El asistente no respondio");
+    }
+    return res.json();
+  },
 };

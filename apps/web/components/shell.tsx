@@ -6,6 +6,7 @@ import { usePathname, useRouter } from "next/navigation";
 import { LogOut, Menu } from "lucide-react";
 import { estaAutenticado, getEmail, getNombre, logout } from "@/lib/auth";
 import { CampanitaNotificaciones } from "@/components/campanita-notificaciones";
+import { ChatBot } from "@/components/chat-bot";
 import { Sidebar } from "@/components/sidebar";
 
 export function Shell({ children }: { children: React.ReactNode }) {
@@ -92,6 +93,7 @@ export function Shell({ children }: { children: React.ReactNode }) {
       </header>
 
       <main className="relative z-10 mx-auto max-w-[1600px] px-4 py-6">{children}</main>
+      <ChatBot />
     </>
   );
 }

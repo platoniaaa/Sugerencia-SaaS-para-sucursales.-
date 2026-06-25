@@ -86,6 +86,12 @@ SUMMARIZECOLUMNS(
 )
 """.strip()
 
+    # --- Chatbot (Gemini) ---
+    # API key de Google AI Studio (free tier). Si queda vacia, el endpoint /api/chat
+    # responde 503 con un mensaje claro. Generar en https://aistudio.google.com.
+    gemini_api_key: str = ""
+    gemini_modelo: str = "gemini-2.5-flash"
+
     # --- Planilla Post Venta (exportación web) ---
     # Tabla transaccional enorme del BI. A la nube se sube solo el AÑO EN CURSO (el filtro
     # por período se arma dinámicamente en código). El nombre de la tabla es configurable.
