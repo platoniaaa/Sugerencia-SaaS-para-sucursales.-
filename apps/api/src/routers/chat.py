@@ -1,6 +1,6 @@
 """Endpoint del chatbot del sugerido.
 
-Protegido por requiere_admin (fase 1). Si Gemini no esta configurado, responde
+Disponible para todo usuario autenticado. Si Gemini no esta configurado, responde
 503 con un mensaje accionable.
 """
 from fastapi import APIRouter, Depends, HTTPException

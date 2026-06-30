@@ -3,16 +3,14 @@
 import { useEffect, useRef, useState } from "react";
 import { MessageCircle, Send, X } from "lucide-react";
 import { api } from "@/lib/api-client";
-import { getEsAdmin } from "@/lib/auth";
 
 type Mensaje = { role: "user" | "model"; text: string };
 
-/** Widget flotante de chat con el asistente (Gemini). Solo visible para admin
- * en esta fase 1. Persiste el hilo en memoria mientras la pestania este abierta;
+/** Widget flotante de chat con el asistente (Gemini). Visible para todo usuario
+ * autenticado. Persiste el hilo en memoria mientras la pestania este abierta;
  * no toca localStorage por ahora (privacidad). */
 export function ChatBot() {
   const [montado, setMontado] = useState(false);
-  const [esAdmin, setEsAdmin] = useState(false);
   const [abierto, setAbierto] = useState(false);
   const [mensajes, setMensajes] = useState<Mensaje[]>([]);
   const [borrador, setBorrador] = useState("");
@@ -20,10 +18,9 @@ export function ChatBot() {
   const [error, setError] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
 
-  // SSR-safe: solo leer flags despues del primer render del cliente.
+  // SSR-safe: el widget solo se monta tras el primer render del cliente.
   useEffect(() => {
     setMontado(true);
-    setEsAdmin(getEsAdmin());
   }, []);
 
   // Auto-scroll al final cuando llegan mensajes nuevos.
@@ -31,7 +28,7 @@ export function ChatBot() {
     if (scrollRef.current) scrollRef.current.scrollTop = scrollRef.current.scrollHeight;
   }, [mensajes, enviando]);
 
-  if (!montado || !esAdmin) return null;
+  if (!montado) return null;
 
   const enviar = async () => {
     const pregunta = borrador.trim();

@@ -81,8 +81,8 @@ app.include_router(auditoria.router, dependencies=_protegido)
 app.include_router(ventas.router, dependencies=_protegido)
 # Admin: requiere flag es_admin (no solo estar logueado).
 app.include_router(admin.router, dependencies=[Depends(requiere_admin)])
-# Chatbot: por ahora solo admin (decidido al lanzar, se puede abrir despues).
-app.include_router(chat.router, dependencies=[Depends(requiere_admin)])
+# Chatbot: disponible para todo usuario autenticado.
+app.include_router(chat.router, dependencies=_protegido)
 
 
 @app.get("/", include_in_schema=False)
