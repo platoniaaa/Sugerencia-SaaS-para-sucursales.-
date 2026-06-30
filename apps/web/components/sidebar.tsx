@@ -13,6 +13,7 @@ import {
   LineChart,
   LogOut,
   ShoppingCart,
+  Sigma,
   X,
 } from "lucide-react";
 import { getEmail, getEsAdmin, getNombre, logout } from "@/lib/auth";
@@ -31,6 +32,7 @@ const NAV: NavItem[] = [
   { href: "/sugerencias-manuales", label: "Sugerencias", icon: ClipboardList },
   { href: "/ventas", label: "Ventas", icon: LineChart },
   { href: "/auditoria", label: "Auditoría", icon: FileText },
+  { href: "/modelo", label: "Modelo", icon: Sigma },
   { href: "/cargar", label: "Cargar datos", icon: Database, soloAdmin: true },
 ];
 
