@@ -36,6 +36,10 @@ class Settings(BaseSettings):
     # Origenes permitidos por CORS (separados por coma).
     cors_origins: str = "http://localhost:3000"
 
+    # Emails no-admin que pueden ver la pestana "Accesos" de auditoria (quien entro
+    # y a que hora). Los admin siempre pueden. Separados por coma.
+    emails_ver_accesos: str = "mramos@curifor.com"
+
     # --- Power BI (ingesta automatica via API executeQueries) ---
     # Credenciales de un "service principal" (app registrada en Entra ID) con acceso
     # al workspace. Si quedan vacias, la sincronizacion con Power BI esta desactivada.
@@ -106,6 +110,10 @@ SUMMARIZECOLUMNS(
     @property
     def cors_origins_list(self) -> list[str]:
         return [o.strip() for o in self.cors_origins.split(",") if o.strip()]
+
+    @property
+    def emails_ver_accesos_set(self) -> set[str]:
+        return {e.strip().lower() for e in self.emails_ver_accesos.split(",") if e.strip()}
 
     @property
     def powerbi_configurado(self) -> bool:

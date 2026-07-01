@@ -359,6 +359,11 @@ export const api = {
     return getJSON(`/api/auditoria?limit=${limit}&offset=${offset}`);
   },
 
+  /** Accesos (login) — solo admin o emails autorizados en el backend. */
+  async accesos(limit = 200, offset = 0): Promise<AuditoriaPage> {
+    return getJSON(`/api/auditoria/accesos?limit=${limit}&offset=${offset}`);
+  },
+
   async notificaciones(soloNoLeidas = false, limit = 20): Promise<NotificacionesResponse> {
     return getJSON(
       `/api/notificaciones?solo_no_leidas=${soloNoLeidas}&limit=${limit}`

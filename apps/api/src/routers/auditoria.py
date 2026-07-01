@@ -14,7 +14,7 @@ from ..schemas import (
     NotificacionOut,
 )
 from ..services import auditoria_service
-from ..services.auth import requiere_auth
+from ..services.auth import requiere_auth, requiere_ver_accesos
 
 router = APIRouter(tags=["auditoria"])
 settings = get_settings()
@@ -43,7 +43,27 @@ def listar(
     offset: int = Query(0, ge=0),
     db: Session = Depends(get_db),
 ):
-    rows, total = auditoria_service.listar_auditoria(db, limit=limit, offset=offset)
+    # Los accesos (login) van en su propia vista, restringida. No mezclarlos aca.
+    rows, total = auditoria_service.listar_auditoria(
+        db, excluir_acciones=["login"], limit=limit, offset=offset
+    )
+    return AuditoriaPage(
+        items=[AuditoriaLogOut.model_validate(r) for r in rows],
+        total=total, limit=limit, offset=offset,
+    )
+
+
+@router.get("/api/auditoria/accesos", response_model=AuditoriaPage)
+def listar_accesos(
+    limit: int = Query(100, ge=1, le=500),
+    offset: int = Query(0, ge=0),
+    db: Session = Depends(get_db),
+    _email: str = Depends(requiere_ver_accesos),
+):
+    """Quien inicio sesion y a que hora. Solo admin o emails autorizados."""
+    rows, total = auditoria_service.listar_auditoria(
+        db, accion="login", limit=limit, offset=offset
+    )
     return AuditoriaPage(
         items=[AuditoriaLogOut.model_validate(r) for r in rows],
         total=total, limit=limit, offset=offset,

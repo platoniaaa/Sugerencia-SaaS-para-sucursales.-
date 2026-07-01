@@ -5,7 +5,7 @@ from sqlalchemy.orm import Session
 
 from ..db import get_db
 from ..models import Usuario
-from ..services import auth
+from ..services import auth, auditoria_service
 
 router = APIRouter(prefix="/api/auth", tags=["auth"])
 
@@ -28,6 +28,12 @@ def login(payload: LoginRequest, db: Session = Depends(get_db)):
     usuario = db.get(Usuario, email)
     if not usuario or not usuario.activo or not auth.verify_password(payload.password, usuario.password_hash):
         raise HTTPException(status_code=401, detail="Correo o contraseña incorrectos")
+    # Registrar el acceso para la vista de auditoria (quien entro y a que hora).
+    auditoria_service.registrar(
+        db, accion="login", entidad="sesion", usuario_email=email,
+        detalle=usuario.nombre,
+    )
+    db.commit()
     return LoginResponse(
         token=auth.crear_token(email), email=email, nombre=usuario.nombre,
         es_admin=usuario.es_admin,

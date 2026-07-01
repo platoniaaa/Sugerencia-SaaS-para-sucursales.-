@@ -81,11 +81,20 @@ def notificar(
 
 
 def listar_auditoria(
-    db: Session, *, limit: int = 100, offset: int = 0
+    db: Session,
+    *,
+    accion: str | None = None,
+    excluir_acciones: list[str] | None = None,
+    limit: int = 100,
+    offset: int = 0,
 ) -> tuple[list[AuditoriaLog], int]:
     base = select(AuditoriaLog).where(
         AuditoriaLog.tenant_id == settings.default_tenant_id
     )
+    if accion is not None:
+        base = base.where(AuditoriaLog.accion == accion)
+    if excluir_acciones:
+        base = base.where(AuditoriaLog.accion.not_in(excluir_acciones))
     total = len(list(db.scalars(base).all()))
     rows = list(
         db.scalars(

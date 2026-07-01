@@ -92,3 +92,15 @@ def requiere_admin(email: str = Depends(requiere_auth), db=Depends(get_db)) -> s
     if not user or not user.es_admin:
         raise HTTPException(status_code=403, detail="Requiere permisos de admin")
     return email
+
+
+def requiere_ver_accesos(email: str = Depends(requiere_auth), db=Depends(get_db)) -> str:
+    """Autoriza la vista de accesos (quien entro y cuando): admin o email en la lista."""
+    from ..models import Usuario  # import local para evitar ciclo
+
+    user = db.get(Usuario, email)
+    if user and user.es_admin:
+        return email
+    if email.lower() in settings.emails_ver_accesos_set:
+        return email
+    raise HTTPException(status_code=403, detail="No autorizado para ver accesos")
