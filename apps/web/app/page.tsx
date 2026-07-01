@@ -13,7 +13,7 @@ import { ModalSugerenciaManual } from "@/components/modal-sugerencia-manual";
 import { api } from "@/lib/api-client";
 import { getEsAdmin } from "@/lib/auth";
 import { KEYS_POR_DEFECTO } from "@/lib/columnas";
-import { formatoNumero } from "@/lib/formato";
+import { formatoFechaHora, formatoNumero } from "@/lib/formato";
 import { STORAGE_KEYS, guardar, leer } from "@/lib/persistencia-dashboard";
 import type { Sucursal, SugeridoFiltros, SugeridoKpis, SugeridoRow } from "@/lib/types";
 
@@ -66,6 +66,8 @@ export default function DashboardPage() {
   const [rows, setRows] = useState<SugeridoRow[]>([]);
   const [kpis, setKpis] = useState<SugeridoKpis | null>(null);
   const [total, setTotal] = useState(0);
+  // Fecha/hora de la última carga de datos desde Power BI (para todos los usuarios).
+  const [ultimaSync, setUltimaSync] = useState<string | null>(null);
   const [cargando, setCargando] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
@@ -116,6 +118,16 @@ export default function DashboardPage() {
   useEffect(() => {
     localStorage.setItem(LS_COLUMNAS, JSON.stringify(colsVisibles));
   }, [colsVisibles]);
+
+  // Fecha/hora de la última sincronización de datos desde Power BI.
+  useEffect(() => {
+    api
+      .ultimaSincronizacion()
+      .then((r) => setUltimaSync(r.creado_en))
+      .catch(() => {
+        /* el backend puede no estar arriba todavia */
+      });
+  }, []);
 
   // Cargar catalogos una vez (sucursales + proveedores).
   useEffect(() => {
@@ -197,6 +209,11 @@ export default function DashboardPage() {
             {cargando ? "Cargando…" : `${formatoNumero(total)} filas`}
             {total > rows.length && ` (mostrando ${formatoNumero(rows.length)})`}
           </p>
+          {ultimaSync && (
+            <p className="mt-1 text-[12px] text-ink-400">
+              Datos actualizados el {formatoFechaHora(ultimaSync)}
+            </p>
+          )}
         </div>
         <div className="flex flex-wrap items-center gap-2">
           <Button variant="outline" size="sm" onClick={cargar}>
