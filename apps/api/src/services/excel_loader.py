@@ -11,7 +11,7 @@ import unicodedata
 from typing import Any
 
 from openpyxl import load_workbook
-from sqlalchemy import delete, insert
+from sqlalchemy import delete, func, insert, select
 from sqlalchemy.orm import Session
 
 from ..config import get_settings
@@ -86,6 +86,22 @@ HEADER_ALIASES: dict[str, str] = {
     "valor_sugerido_suc_clp": "total_valor_sugerido_clp",
     "valor_sugerido_clp": "total_valor_sugerido_clp",
     "pedir_flag": "pedir_flag",
+    # Traslado lateral: texto "N unidades desde X; M desde Y" (medida del BI).
+    "trasladar_desde": "trasladar_desde",
+    "traslado_desde_otras_sucursales": "trasladar_desde",
+    # Stock por bodega/sucursal (columnas fisicas del BI, expandidas por grupo
+    # de reemplazo). El comprador las usa para decidir traslado en vez de compra.
+    "stock_linderos": "stock_linderos",
+    "stock_curico": "stock_curico",
+    "stock_talca": "stock_talca",
+    "stock_rancagua": "stock_rancagua",
+    "stock_diez_de_julio_2": "stock_diez_de_julio_2",
+    "stock_chillan": "stock_chillan",
+    "stock_cd_repuestos": "stock_cd_repuestos",
+    "stock_brasil_18": "stock_brasil_18",
+    "stock_placilla": "stock_placilla",
+    "stock_chillan_viejo": "stock_chillan_viejo",
+    "stock_talca_2": "stock_talca_2",
     # Nombres tal como aparecen en el VISUAL de Power BI (medidas):
     "total_sugerido": "total_sugerido_suc",
     "stock_activo": "stock_activo_suc",
@@ -97,6 +113,9 @@ HEADER_ALIASES: dict[str, str] = {
 INT_FIELDS = {
     "lead_time_dias", "lt_efectivo", "lt_cd_a_sucursal_dias", "prioridad_cd",
     "stock_seguridad", "punto_de_pedido",
+    "stock_linderos", "stock_curico", "stock_talca", "stock_rancagua",
+    "stock_diez_de_julio_2", "stock_chillan", "stock_cd_repuestos",
+    "stock_brasil_18", "stock_placilla", "stock_chillan_viejo", "stock_talca_2",
 }
 FLOAT_FIELDS = {
     "demanda_mensual", "demanda_diaria", "desv_std_mensual", "costo_unitario",
@@ -169,14 +188,14 @@ def _rows_from_xlsx(content: bytes) -> tuple[list[str], list[list[Any]]]:
 
 def _rows_from_csv(content: bytes) -> tuple[list[str], list[list[Any]]]:
     text = content.decode("utf-8-sig", errors="replace")
-    sample = text[:4096]
-    try:
-        dialect = csv.Sniffer().sniff(sample, delimiters=",;\t")
-    except csv.Error:
-        class _D(csv.excel):
-            delimiter = ";" if sample.count(";") > sample.count(",") else ","
-        dialect = _D()
-    reader = csv.reader(io.StringIO(text), dialect)
+    # Dialecto determinista: el extractor de Power BI emite coma + comillas dobles
+    # estandar. csv.Sniffer adivinaba el dialecto sobre los primeros 4096 bytes y
+    # con campos entrecomillados mixtos (ej. descripciones con 15"/16) a veces
+    # descuadraba filas. Solo se detecta el delimitador (un CSV manual chileno
+    # puede venir con ';') mirando la linea de cabeceras.
+    primera_linea = text.split("\n", 1)[0]
+    delim = ";" if primera_linea.count(";") > primera_linea.count(",") else ","
+    reader = csv.reader(io.StringIO(text), delimiter=delim, quotechar='"', doublequote=True)
     all_rows = list(reader)
     if not all_rows:
         return [], []
@@ -243,9 +262,6 @@ def persistir_filas(
 
     tenant = settings.default_tenant_id
 
-    # Reemplazo total (snapshot): vaciar y reinsertar.
-    db.execute(delete(Sugerido).where(Sugerido.tenant_id == tenant))
-
     registros_sugerido: list[dict[str, Any]] = []
     productos_vistos: dict[str, dict] = {}
     sucursales_vistas: dict[str, dict] = {}
@@ -279,6 +295,22 @@ def persistir_filas(
                 "prioridad_cd": valores.get("prioridad_cd"),
             }
 
+    # Guardrail pre-reemplazo: nunca pisar un snapshot sano con uno sospechosamente
+    # chico (extraccion cortada a la mitad, CSV corrupto, modelo equivocado abierto).
+    previas = (
+        db.execute(
+            select(func.count()).select_from(Sugerido).where(Sugerido.tenant_id == tenant)
+        ).scalar()
+        or 0
+    )
+    minimo = int(previas * settings.sync_min_ratio_filas)
+    if previas and len(registros_sugerido) < minimo:
+        raise ValueError(
+            f"Carga abortada: llegaron {len(registros_sugerido)} filas validas y el snapshot "
+            f"actual tiene {previas} (minimo aceptado: {minimo}). Se conserva el snapshot "
+            "anterior. Si la baja es real, ajustar SYNC_MIN_RATIO_FILAS."
+        )
+
     # Inserts en multi-fila (un INSERT con muchas VALUES por lote). Con pg8000 esto es
     # MUCHO mas rapido que executemany (que iria fila por fila por la red). chunk=500
     # mantiene los parametros por debajo del limite de Postgres (~65k).
@@ -288,15 +320,45 @@ def persistir_filas(
             if lote:
                 db.execute(insert(model).values(lote))
 
-    _bulk(Sugerido, registros_sugerido)
-    db.execute(delete(DimProducto).where(DimProducto.tenant_id == tenant))
-    db.execute(delete(DimSucursal).where(DimSucursal.tenant_id == tenant))
-    _bulk(DimProducto, list(productos_vistos.values()))
-    _bulk(DimSucursal, list(sucursales_vistas.values()))
-    db.commit()
+    # Reemplazo total (snapshot) en una sola transaccion: si cualquier insert falla
+    # (corte de red, timeout del pooler), el rollback conserva el snapshot anterior.
+    try:
+        db.execute(delete(Sugerido).where(Sugerido.tenant_id == tenant))
+        _bulk(Sugerido, registros_sugerido)
+        db.execute(delete(DimProducto).where(DimProducto.tenant_id == tenant))
+        db.execute(delete(DimSucursal).where(DimSucursal.tenant_id == tenant))
+        _bulk(DimProducto, list(productos_vistos.values()))
+        _bulk(DimSucursal, list(sucursales_vistas.values()))
+        db.commit()
+    except Exception:
+        db.rollback()
+        raise
 
     if saltadas:
         advertencias.append(f"{saltadas} fila(s) sin producto/sucursal fueron omitidas.")
+
+    # Chequeos de calidad post-carga (avisan, no bloquean).
+    umbral = settings.sync_umbral_sugerido_unidades
+    anomalos = sorted(
+        {
+            str(r["producto"])
+            for r in registros_sugerido
+            if (r.get("total_sugerido_suc") or 0) > umbral
+        }
+    )
+    if anomalos:
+        advertencias.append(
+            f"{len(anomalos)} producto(s) con Total Sugerido > {umbral:,} unidades "
+            "(posible unidad de medida corrupta, ej. mL): " + ", ".join(anomalos[:10])
+        )
+    con_sugerido = [r for r in registros_sugerido if (r.get("total_sugerido_suc") or 0) > 0]
+    sin_prov = sum(1 for r in con_sugerido if not r.get("proveedor"))
+    if con_sugerido and sin_prov:
+        pct = round(100 * sin_prov / len(con_sugerido))
+        advertencias.append(
+            f"{sin_prov} de {len(con_sugerido)} filas con sugerido ({pct}%) no tienen "
+            "proveedor asignado (caeran al carro 'Sin proveedor asignado')."
+        )
 
     return {
         "filas_cargadas": len(registros_sugerido),

@@ -81,6 +81,12 @@ def _apply_filters(stmt, f: SugeridoFiltros):
             # Distribucion / traslado del CD a las sucursales (no incluye el CD mismo).
             stmt = stmt.where(Sugerido.sucursal_id != "CD REPUESTOS")
             stmt = stmt.where(func.lower(Sugerido.abastece_cd).in_(("si", "sí")))
+            # Solo filas accionables (contrato del modelo BI): con traslado sugerido
+            # o con sugerido directo (importados locales A/B, pendiente regla de
+            # negocio). Sin este guard la vista arrastra miles de filas en cero.
+            stmt = stmt.where(
+                or_(Sugerido.sugerido_traslado > 0, Sugerido.total_sugerido_suc > 0)
+            )
     return stmt
 
 

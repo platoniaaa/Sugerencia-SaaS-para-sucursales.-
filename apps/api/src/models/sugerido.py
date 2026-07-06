@@ -65,6 +65,23 @@ class Sugerido(Base):
     total_sugerido_suc: Mapped[float | None] = mapped_column(Float, nullable=True, index=True)
     total_valor_sugerido_clp: Mapped[float | None] = mapped_column(Float, nullable=True)
     pedir_flag: Mapped[str | None] = mapped_column(String, nullable=True)
+    # Traslado lateral sugerido: "N unidades desde X; M desde Y" (medida del BI).
+    trasladar_desde: Mapped[str | None] = mapped_column(String, nullable=True)
+
+    # --- Stock por bodega/sucursal (columnas fisicas del BI, incluyen grupo de
+    # reemplazo). Espejo de las columnas hardcodeadas del modelo: si se agrega
+    # una sucursal alla, hay que agregarla aca tambien. ---
+    stock_linderos: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stock_curico: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stock_talca: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stock_rancagua: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stock_diez_de_julio_2: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stock_chillan: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stock_cd_repuestos: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stock_brasil_18: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stock_placilla: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stock_chillan_viejo: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    stock_talca_2: Mapped[int | None] = mapped_column(Integer, nullable=True)
 
     __table_args__ = (
         Index("ix_sugerido_prod_suc", "producto", "sucursal_id"),

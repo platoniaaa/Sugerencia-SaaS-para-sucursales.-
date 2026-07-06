@@ -101,6 +101,10 @@ export default function DashboardPage() {
   // Ref para recolectar IDs visibles de la grilla cuando se exporta con filtros
   // de columna activos (AG Grid los maneja del lado cliente).
   const tablaRef = useRef<TablaSugeridoHandle>(null);
+  // Si el server devolvio mas filas de las que la grilla puede cargar (limit 5000),
+  // los KPIs calculados sobre las filas visibles quedarian truncados: en ese caso
+  // se piden al backend (que agrega sobre el total) y se ignora el calculo del grid.
+  const truncadoRef = useRef(false);
   const [exportando, setExportando] = useState(false);
   const [mostrarGraficos, setMostrarGraficos] = useState(false);
   // El grid notifica si hay filtros de columna activos; usamos esto para que
@@ -172,11 +176,19 @@ export default function DashboardPage() {
     setCargando(true);
     setError(null);
     try {
-      // KPIs ya no se piden al backend: los calcula la grilla sobre las filas
-      // visibles tras los filtros de columna (ver onKpisVisiblesChange abajo).
+      // KPIs: los calcula la grilla sobre las filas visibles tras los filtros de
+      // columna (ver onKpisVisiblesChange abajo)... salvo que el resultado exceda
+      // el limite de 5000 filas: ahi la grilla veria un subconjunto y los KPIs
+      // saldrian truncados, asi que se piden al backend (agrega sobre el total).
       const page = await api.sugerido(filtros, { limit: 5000, sort: "-total_sugerido_suc" });
       setRows(page.items);
       setTotal(page.total);
+      const estaTruncado = page.total > page.items.length;
+      truncadoRef.current = estaTruncado;
+      if (estaTruncado) {
+        const k = await api.kpis(filtros);
+        setKpis(k);
+      }
     } catch (e) {
       setError(
         e instanceof Error
@@ -229,7 +241,8 @@ export default function DashboardPage() {
           </h1>
           <p className="mt-3 text-[13px] text-ink-500">
             {cargando ? "Cargando…" : `${formatoNumero(total)} filas`}
-            {total > rows.length && ` (mostrando ${formatoNumero(rows.length)})`}
+            {total > rows.length &&
+              ` (mostrando ${formatoNumero(rows.length)} — los KPIs cubren el total; el Excel exporta solo lo visible)`}
           </p>
           {ultimaSync && (
             <p className="mt-1 text-[12px] text-ink-400">
@@ -314,7 +327,10 @@ export default function DashboardPage() {
         rows={rows}
         columnasVisibles={colsVisibles}
         vista={filtros.vista ?? "todas"}
-        onKpisVisiblesChange={(k) => setKpis(k)}
+        onKpisVisiblesChange={(k) => {
+          // Con resultado truncado mandan los KPIs del backend (cubren el total).
+          if (!truncadoRef.current) setKpis(k);
+        }}
         onFiltrosColumnaChange={setHayFiltrosColumna}
         onRowClick={(r) =>
           router.push(

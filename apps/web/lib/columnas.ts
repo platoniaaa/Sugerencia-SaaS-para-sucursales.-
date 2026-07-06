@@ -42,6 +42,19 @@ export const COLUMNAS: DefColumna[] = [
   { key: "unidad_medida", label: "Unidad", tipo: "texto", visiblePorDefecto: false },
   { key: "pedir", label: "Pedir", tipo: "texto", visiblePorDefecto: false },
   { key: "reemplazos", label: "Reemplazos", tipo: "texto", visiblePorDefecto: false },
+  { key: "trasladar_desde", label: "Trasladar desde", tipo: "texto", visiblePorDefecto: false },
+  // Stock por bodega/sucursal (espejo de las columnas del BI; incluye grupo de reemplazo).
+  { key: "stock_linderos", label: "Stock Linderos", tipo: "numero", visiblePorDefecto: false },
+  { key: "stock_curico", label: "Stock Curico", tipo: "numero", visiblePorDefecto: false },
+  { key: "stock_talca", label: "Stock Talca", tipo: "numero", visiblePorDefecto: false },
+  { key: "stock_rancagua", label: "Stock Rancagua", tipo: "numero", visiblePorDefecto: false },
+  { key: "stock_diez_de_julio_2", label: "Stock Diez de Julio (2)", tipo: "numero", visiblePorDefecto: false },
+  { key: "stock_chillan", label: "Stock Chillan", tipo: "numero", visiblePorDefecto: false },
+  { key: "stock_cd_repuestos", label: "Stock CD Repuestos", tipo: "numero", visiblePorDefecto: false },
+  { key: "stock_brasil_18", label: "Stock Brasil 18", tipo: "numero", visiblePorDefecto: false },
+  { key: "stock_placilla", label: "Stock Placilla", tipo: "numero", visiblePorDefecto: false },
+  { key: "stock_chillan_viejo", label: "Stock Chillan Viejo", tipo: "numero", visiblePorDefecto: false },
+  { key: "stock_talca_2", label: "Stock Talca (2)", tipo: "numero", visiblePorDefecto: false },
 ];
 
 export const KEYS_POR_DEFECTO = COLUMNAS.filter((c) => c.visiblePorDefecto).map((c) => c.key as string);

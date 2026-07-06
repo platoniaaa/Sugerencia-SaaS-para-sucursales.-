@@ -51,6 +51,19 @@ class SugeridoRow(BaseModel):
     total_sugerido_suc: float | None = None
     total_valor_sugerido_clp: float | None = None
     pedir_flag: str | None = None
+    trasladar_desde: str | None = None
+    # Stock por bodega/sucursal (espejo de las columnas del BI).
+    stock_linderos: int | None = None
+    stock_curico: int | None = None
+    stock_talca: int | None = None
+    stock_rancagua: int | None = None
+    stock_diez_de_julio_2: int | None = None
+    stock_chillan: int | None = None
+    stock_cd_repuestos: int | None = None
+    stock_brasil_18: int | None = None
+    stock_placilla: int | None = None
+    stock_chillan_viejo: int | None = None
+    stock_talca_2: int | None = None
 
 
 class SugeridoPage(BaseModel):

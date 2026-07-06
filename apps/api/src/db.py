@@ -74,14 +74,36 @@ def create_all() -> None:
         "ALTER TABLE sugerido ADD COLUMN IF NOT EXISTS empresa VARCHAR",
         "ALTER TABLE sugerencia_manual ADD COLUMN IF NOT EXISTS lote_id VARCHAR",
         "CREATE INDEX IF NOT EXISTS ix_sugmanual_lote ON sugerencia_manual (lote_id)",
+        "ALTER TABLE sugerencia_manual ADD COLUMN IF NOT EXISTS expira_en TIMESTAMP WITH TIME ZONE",
+        "CREATE INDEX IF NOT EXISTS ix_sugmanual_expira ON sugerencia_manual (expira_en)",
+        # 2026-07: traslado lateral + stock por bodega en el sugerido.
+        "ALTER TABLE sugerido ADD COLUMN IF NOT EXISTS trasladar_desde VARCHAR",
+        "ALTER TABLE sugerido ADD COLUMN IF NOT EXISTS stock_linderos INTEGER",
+        "ALTER TABLE sugerido ADD COLUMN IF NOT EXISTS stock_curico INTEGER",
+        "ALTER TABLE sugerido ADD COLUMN IF NOT EXISTS stock_talca INTEGER",
+        "ALTER TABLE sugerido ADD COLUMN IF NOT EXISTS stock_rancagua INTEGER",
+        "ALTER TABLE sugerido ADD COLUMN IF NOT EXISTS stock_diez_de_julio_2 INTEGER",
+        "ALTER TABLE sugerido ADD COLUMN IF NOT EXISTS stock_chillan INTEGER",
+        "ALTER TABLE sugerido ADD COLUMN IF NOT EXISTS stock_cd_repuestos INTEGER",
+        "ALTER TABLE sugerido ADD COLUMN IF NOT EXISTS stock_brasil_18 INTEGER",
+        "ALTER TABLE sugerido ADD COLUMN IF NOT EXISTS stock_placilla INTEGER",
+        "ALTER TABLE sugerido ADD COLUMN IF NOT EXISTS stock_chillan_viejo INTEGER",
+        "ALTER TABLE sugerido ADD COLUMN IF NOT EXISTS stock_talca_2 INTEGER",
     ]
-    with engine.begin() as conn:
-        for sql in migraciones:
-            try:
+    # SQLite NO soporta "ADD COLUMN IF NOT EXISTS" (error de sintaxis que se
+    # tragaba el try, dejando bases locales viejas sin las columnas nuevas):
+    # se ejecuta sin la clausula y el error por columna duplicada se ignora.
+    es_sqlite = settings.database_url.startswith("sqlite")
+    for sql in migraciones:
+        if es_sqlite and sql.startswith("ALTER TABLE"):
+            sql = sql.replace("ADD COLUMN IF NOT EXISTS", "ADD COLUMN", 1)
+        try:
+            # Transaccion por sentencia: una que falle (columna ya existe) no
+            # aborta las siguientes (en Postgres abortaria la transaccion entera).
+            with engine.begin() as conn:
                 conn.execute(text(sql))
-            except Exception:
-                # En SQLite viejo no existe IF NOT EXISTS; lo ignoramos silenciosamente.
-                pass
+        except Exception:
+            pass
 
 
 def get_db() -> Generator[Session, None, None]:

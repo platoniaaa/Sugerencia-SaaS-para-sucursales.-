@@ -86,7 +86,14 @@ def sync_desktop(db: Session, dax: str | None = None) -> dict:
             pass
 
     resultado["origen"] = "powerbi-desktop"
-    resultado["filas_recibidas"] = int(data.get("rows") or 0)
+    recibidas = int(data.get("rows") or 0)
+    resultado["filas_recibidas"] = recibidas
+    cargadas = int(resultado.get("filas_cargadas") or 0)
+    if recibidas and cargadas != recibidas:
+        resultado.setdefault("advertencias", []).append(
+            f"El extractor reporto {recibidas} filas pero se cargaron {cargadas}: "
+            "revisar formato/escape del CSV."
+        )
     return resultado
 
 

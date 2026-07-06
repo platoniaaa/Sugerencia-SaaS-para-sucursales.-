@@ -39,6 +39,19 @@ export interface SugeridoRow {
   total_sugerido_suc: number | null;
   total_valor_sugerido_clp: number | null;
   pedir_flag: string | null;
+  trasladar_desde: string | null;
+  // Stock por bodega/sucursal (espejo de las columnas del BI).
+  stock_linderos: number | null;
+  stock_curico: number | null;
+  stock_talca: number | null;
+  stock_rancagua: number | null;
+  stock_diez_de_julio_2: number | null;
+  stock_chillan: number | null;
+  stock_cd_repuestos: number | null;
+  stock_brasil_18: number | null;
+  stock_placilla: number | null;
+  stock_chillan_viejo: number | null;
+  stock_talca_2: number | null;
 }
 
 export interface SugeridoPage {
@@ -123,6 +136,8 @@ export interface SugerenciaManual {
   usado_en_compra: boolean;
   /** UUID compartido por las filas de una misma carga masiva. */
   lote_id?: string | null;
+  /** Fecha (ISO) en que se archiva automáticamente. null = no vence. */
+  expira_en?: string | null;
 }
 
 export interface LineaCarro {

@@ -36,6 +36,7 @@ LABELS: dict[str, str] = {
     "lt_origen": "Origen LT",
     "abastece_cd": "Abastece CD",
     "prioridad_cd": "Prioridad CD",
+    "comprar_en_el_cd": "Comprar en el CD",
     "demanda_mensual": "Demanda Mensual",
     "demanda_diaria": "Demanda Diaria",
     "desv_std_mensual": "Desv Std Mensual",
@@ -51,6 +52,18 @@ LABELS: dict[str, str] = {
     "total_sugerido_suc": "Total Sugerido",
     "total_valor_sugerido_clp": "Valor Total CLP",
     "reemplazos": "Reemplazos",
+    "trasladar_desde": "Trasladar desde",
+    "stock_linderos": "Stock Linderos",
+    "stock_curico": "Stock Curico",
+    "stock_talca": "Stock Talca",
+    "stock_rancagua": "Stock Rancagua",
+    "stock_diez_de_julio_2": "Stock Diez de Julio (2)",
+    "stock_chillan": "Stock Chillan",
+    "stock_cd_repuestos": "Stock CD Repuestos",
+    "stock_brasil_18": "Stock Brasil 18",
+    "stock_placilla": "Stock Placilla",
+    "stock_chillan_viejo": "Stock Chillan Viejo",
+    "stock_talca_2": "Stock Talca (2)",
 }
 
 # Columnas por defecto si el cliente no especifica.

@@ -41,7 +41,16 @@ def db_session():
 
 
 def _seed(session):
-    session.add(Usuario(email="test@curifor.com", password_hash=hash_password("123456"), nombre="Test"))
+    # El usuario de los tests es admin: los endpoints /api/admin/* verifican
+    # es_admin en la BD (requiere_admin), no solo el token.
+    session.add(Usuario(
+        email="test@curifor.com", password_hash=hash_password("123456"),
+        nombre="Test", es_admin=True,
+    ))
+    session.add(Usuario(
+        email="noadmin@curifor.com", password_hash=hash_password("123456"),
+        nombre="No Admin", es_admin=False,
+    ))
     session.add(DimSucursal(sucursal_id="LINDEROS", tenant_id="curifor", nombre="Linderos"))
     session.add(DimProducto(
         producto="20 BXO5W30AA", tenant_id="curifor", descripcion="ACEITE 5W30 LITRO FORD",

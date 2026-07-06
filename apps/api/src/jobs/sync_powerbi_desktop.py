@@ -35,6 +35,19 @@ def run() -> int:
             print(f"  advertencia: {a}")
     except Exception as e:  # noqa: BLE001
         print(f"ERROR sugerido: {e}", file=sys.stderr)
+        # Dejar la sesion limpia y registrar el fallo para que la web lo muestre.
+        try:
+            db.rollback()
+            auditoria_service.registrar(
+                db, accion="powerbi_sync_error", entidad="sistema",
+                usuario_email="push_to_cloud",
+                detalle=f"Sincronizacion del sugerido FALLO: {e}",
+            )
+            db.commit()
+        except Exception:  # noqa: BLE001
+            db.rollback()
+        finally:
+            db.close()
         return 1
 
     # Ventas (histórico 12 meses). No es crítico: si falla, el sugerido ya quedó cargado.
@@ -45,6 +58,7 @@ def run() -> int:
             f"({vres.get('filas_recibidas', '?')} recibidas)."
         )
     except Exception as e:  # noqa: BLE001
+        db.rollback()
         print(f"AVISO ventas (continuo igual): {e}", file=sys.stderr)
 
     # Stock Unificado (snapshot por producto-bodega). No es crítico.
@@ -55,6 +69,7 @@ def run() -> int:
             f"({sres.get('filas_recibidas', '?')} recibidas)."
         )
     except Exception as e:  # noqa: BLE001
+        db.rollback()
         print(f"AVISO stock (continuo igual): {e}", file=sys.stderr)
 
     # Planilla Post Venta (solo año en curso, para exportar desde la web). No es crítico.
@@ -66,6 +81,7 @@ def run() -> int:
             f"{pres['periodos']} períodos, {pres['sucursales']} sucursales."
         )
     except Exception as e:  # noqa: BLE001
+        db.rollback()
         print(f"AVISO post-venta (continuo igual): {e}", file=sys.stderr)
 
     # Registrar el evento de sincronizacion en auditoria_log para que la web

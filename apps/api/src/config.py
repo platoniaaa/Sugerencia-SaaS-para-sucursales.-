@@ -36,6 +36,14 @@ class Settings(BaseSettings):
     # Origenes permitidos por CORS (separados por coma).
     cors_origins: str = "http://localhost:3000"
 
+    # --- Validacion de cargas del sugerido ---
+    # La carga se ABORTA (conservando el snapshot anterior) si llegan menos filas
+    # que este porcentaje del snapshot vigente. 0.7 = tolera hasta -30%.
+    sync_min_ratio_filas: float = 0.7
+    # Umbral de unidades sobre el cual un Total Sugerido se reporta como anomalo
+    # (tipico de unidades de medida corruptas, ej. aceites en mL).
+    sync_umbral_sugerido_unidades: int = 10000
+
     # Emails no-admin que pueden ver la pestana "Accesos" de auditoria (quien entro
     # y a que hora). Los admin siempre pueden. Separados por coma.
     emails_ver_accesos: str = "mramos@curifor.com"
@@ -68,7 +76,8 @@ ADDCOLUMNS(
   "sugerido_traslado", [Sugerido Traslado],
   "sugerido_compra_neto", [Sugerido Compra Neto],
   "comprar_en_el_cd", [Comprar en el CD],
-  "pedir_flag", [Pedir?]
+  "pedir_flag", [Pedir?],
+  "trasladar_desde", [Traslado desde Otras Sucursales]
 )
 """.strip()
 

@@ -27,6 +27,39 @@ def test_login_usuario_inexistente(client):
     assert r.status_code == 401
 
 
+def test_login_registra_acceso_fuera_de_auditoria(client):
+    r = client.post("/api/auth/login", json={"email": "test@curifor.com", "password": "123456"})
+    assert r.status_code == 200
+    # El acceso NO debe aparecer en la auditoria general (va en su vista restringida).
+    aud = client.get("/api/auditoria").json()
+    assert all(it["accion"] != "login" for it in aud["items"])
+
+
+def test_accesos_requiere_autorizacion(client):
+    # noadmin@curifor.com no es admin ni esta en la lista de emails autorizados -> 403.
+    # (test@curifor.com ahora es admin en el seed, asi que se usa el otro usuario.)
+    from src.main import app
+    from src.services.auth import requiere_auth
+
+    app.dependency_overrides[requiere_auth] = lambda: "noadmin@curifor.com"
+    try:
+        assert client.get("/api/auditoria/accesos").status_code == 403
+    finally:
+        app.dependency_overrides[requiere_auth] = lambda: "test@curifor.com"
+
+
+def test_accesos_lista_logins_para_autorizado(client, monkeypatch):
+    from src.services import auth as auth_svc
+
+    monkeypatch.setattr(auth_svc.settings, "emails_ver_accesos", "test@curifor.com")
+    client.post("/api/auth/login", json={"email": "test@curifor.com", "password": "123456"})
+    r = client.get("/api/auditoria/accesos")
+    assert r.status_code == 200
+    items = r.json()["items"]
+    assert items and items[0]["accion"] == "login"
+    assert items[0]["usuario_email"] == "test@curifor.com"
+
+
 def test_auth_token_roundtrip():
     from src.services.auth import crear_token, verificar_token
 
@@ -211,6 +244,36 @@ def test_carro_incluye_manual_vigente(client):
     assert body["carros"][0]["lineas"][0]["cantidad"] == 11
 
 
+def test_manual_con_fecha_limite_vence_y_se_archiva(client, db_session):
+    from datetime import date, datetime, timedelta, timezone
+
+    from src.models import SugerenciaManual
+    from src.services import recurrentes_service
+    from sqlalchemy import select
+
+    # Manual con fecha límite futura: mientras esté vigente suma al carro (6 -> 11).
+    sid = client.post(
+        "/api/sugerencias-manuales",
+        json={"producto": "20 BXO5W30AA", "sucursal_id": "LINDEROS",
+              "unidades": 5, "expira_en": (date.today() + timedelta(days=7)).isoformat()},
+    ).json()["id"]
+    assert client.get("/api/compras/carros").json()["carros"][0]["lineas"][0]["cantidad"] == 11
+
+    # Forzar que ya venció: deja de sumar al instante, aunque aún no esté archivada.
+    s = db_session.get(SugerenciaManual, sid)
+    s.expira_en = datetime.now(timezone.utc) - timedelta(days=1)
+    db_session.commit()
+    assert client.get("/api/compras/carros").json()["carros"][0]["lineas"][0]["cantidad"] == 6
+
+    # El cron la archiva (limpieza); sale del listado vigente pero queda en historial.
+    assert recurrentes_service.archivar_expiradas(db_session) == 1
+    assert len(client.get("/api/sugerencias-manuales").json()) == 0
+    archivadas = db_session.scalars(
+        select(SugerenciaManual).where(SugerenciaManual.archivada.is_(True))
+    ).all()
+    assert len(archivadas) == 1
+
+
 def test_recurrente_crea_aplica_y_suma_al_carro(client):
     r = client.post(
         "/api/sugerencias-manuales/recurrentes",
@@ -346,7 +409,9 @@ def test_sync_desktop_carga(client, db_session, monkeypatch, tmp_path):
         encoding="utf-8",
     )
     fake = {"ok": True, "port": 5000, "rows": 1, "csv": str(csv)}
-    monkeypatch.setattr(powerbi_desktop_loader, "_ejecutar_script", lambda dax: fake)
+    monkeypatch.setattr(
+        powerbi_desktop_loader, "_ejecutar_script", lambda dax, timeout=600: fake
+    )
 
     r = client.post("/api/admin/cargar-desde-powerbi-desktop")
     assert r.status_code == 200
@@ -361,7 +426,7 @@ def test_sync_desktop_error_msolap(client, monkeypatch):
     monkeypatch.setattr(
         powerbi_desktop_loader,
         "_ejecutar_script",
-        lambda dax: {"ok": False, "error": "El proveedor 'MSOLAP' no esta registrado"},
+        lambda dax, timeout=600: {"ok": False, "error": "El proveedor 'MSOLAP' no esta registrado"},
     )
     r = client.post("/api/admin/cargar-desde-powerbi-desktop")
     assert r.status_code == 502
@@ -504,3 +569,160 @@ def test_regla_stock_sin_venta_marca_pedir_no(db_session):
     assert items[0]["pedir_flag"] == "No"
     assert items[1]["pedir"] == "Si", "con venta mes anterior, no aplicar la regla"
     assert items[2]["pedir"] == "Si", "stock insuficiente, no aplicar la regla"
+
+
+MIME_XLSX = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+
+
+def _xlsx_sugerido(filas):
+    """Arma un xlsx en memoria con cabeceras tipo BI y las filas dadas (listas)."""
+    wb = Workbook()
+    ws = wb.active
+    ws.append(filas[0])
+    for fila in filas[1:]:
+        ws.append(fila)
+    buf = io.BytesIO()
+    wb.save(buf)
+    buf.seek(0)
+    return buf
+
+
+def test_stock_por_bodega_y_trasladar_desde_fluyen(client):
+    """Las columnas de stock por bodega y 'trasladar_desde' del BI llegan a la API
+    (y con eso a la grilla y al export Excel) tras la carga."""
+    buf = _xlsx_sugerido([
+        ["producto", "sucursal_id", "pedir", "total_sugerido_suc",
+         "Stock LINDEROS", "Stock TALCA (2)", "Stock CD REPUESTOS", "trasladar_desde"],
+        ["STK-1", "CHILLAN", "Si", 5, 3, 2, 101,
+         "3 unidades desde Linderos; 2 unidades desde Talca (2)"],
+    ])
+    r = client.post("/api/admin/cargar-sugerido", files={"file": ("s.xlsx", buf, MIME_XLSX)})
+    assert r.status_code == 200
+
+    item = client.get("/api/sugerido").json()["items"][0]
+    assert item["stock_linderos"] == 3
+    assert item["stock_talca_2"] == 2
+    assert item["stock_cd_repuestos"] == 101
+    assert item["trasladar_desde"].startswith("3 unidades desde Linderos")
+
+
+def test_carga_abortada_si_snapshot_encoge_demasiado(client):
+    """Guardrail: una carga con muchas menos filas que el snapshot vigente se
+    aborta con 400 y el snapshot anterior queda intacto."""
+    cabecera = ["producto", "sucursal_id", "pedir", "total_sugerido_suc"]
+    diez = _xlsx_sugerido([cabecera] + [[f"P-{i}", "RANCAGUA", "Si", 1] for i in range(10)])
+    r = client.post("/api/admin/cargar-sugerido", files={"file": ("a.xlsx", diez, MIME_XLSX)})
+    assert r.status_code == 200
+    assert r.json()["filas_cargadas"] == 10
+
+    dos = _xlsx_sugerido([cabecera] + [[f"Q-{i}", "RANCAGUA", "Si", 1] for i in range(2)])
+    r = client.post("/api/admin/cargar-sugerido", files={"file": ("b.xlsx", dos, MIME_XLSX)})
+    assert r.status_code == 400
+    assert "abortada" in r.json()["detail"].lower()
+    # El snapshot anterior sigue vivo.
+    assert client.get("/api/sugerido").json()["total"] == 10
+
+
+def test_advertencia_por_sugerido_anomalo(client):
+    """Un Total Sugerido gigante (unidad de medida corrupta, ej. mL) genera
+    advertencia en la carga, sin bloquearla."""
+    buf = _xlsx_sugerido([
+        ["producto", "sucursal_id", "pedir", "total_sugerido_suc"],
+        ["ACEITE-ML", "LINDEROS", "Si", 765058],
+    ])
+    r = client.post("/api/admin/cargar-sugerido", files={"file": ("c.xlsx", buf, MIME_XLSX)})
+    assert r.status_code == 200
+    advertencias = " | ".join(r.json()["advertencias"])
+    assert "ACEITE-ML" in advertencias
+    assert "corrupta" in advertencias
+
+
+def test_csv_comillas_dobles_no_pierde_filas():
+    """El parser CSV con dialecto fijo no descuadra filas con comillas embebidas
+    (descripciones tipo 15\"/16), que con csv.Sniffer se perdian."""
+    from src.services.excel_loader import _rows_from_csv
+
+    contenido = (
+        '"producto","sucursal_id","descripcion","total_sugerido_suc"\n'
+        'ABR-1,RANCAGUA,"LLAVE 15""/16",4\n'
+        "ABR-2,TALCA,TUERCA 1/2,2\n"
+    ).encode("utf-8")
+    headers, rows = _rows_from_csv(contenido)
+    assert headers == ["producto", "sucursal_id", "descripcion", "total_sugerido_suc"]
+    assert len(rows) == 2
+    assert rows[0][2] == 'LLAVE 15"/16'
+
+
+def test_vista_distribucion_solo_filas_accionables(client, db_session):
+    """La vista distribucion solo trae filas con traslado > 0 o sugerido directo > 0
+    (contrato del modelo BI); las filas en cero no aportan decision."""
+    from src.models import Sugerido
+
+    db_session.add(Sugerido(
+        tenant_id="curifor", producto="DIST-CERO", sucursal_id="TALCA",
+        nombre_sucursal="Talca", abastece_cd="Si", pedir="No",
+        sugerido_traslado=0, total_sugerido_suc=0,
+    ))
+    db_session.add(Sugerido(
+        tenant_id="curifor", producto="DIST-OK", sucursal_id="TALCA",
+        nombre_sucursal="Talca", abastece_cd="Si", pedir="No",
+        sugerido_traslado=7, total_sugerido_suc=0,
+    ))
+    db_session.commit()
+
+    r = client.get("/api/sugerido", params={"vista": "distribucion", "solo_pedir": False})
+    productos = {i["producto"] for i in r.json()["items"]}
+    assert "DIST-OK" in productos
+    assert "DIST-CERO" not in productos
+
+
+def test_admin_endpoint_rechaza_no_admin(db_session):
+    """Un usuario autenticado pero sin es_admin recibe 403 en /api/admin/*."""
+    from fastapi.testclient import TestClient
+
+    from src.db import get_db
+    from src.main import app
+    from src.services.auth import requiere_auth
+
+    def _override():
+        yield db_session
+
+    app.dependency_overrides[get_db] = _override
+    app.dependency_overrides[requiere_auth] = lambda: "noadmin@curifor.com"
+    try:
+        with TestClient(app) as c:
+            r = c.get("/api/admin/powerbi/estado")
+            assert r.status_code == 403
+    finally:
+        app.dependency_overrides.clear()
+
+
+def test_expira_en_fecha_pasada_rechazada(client):
+    """Crear una sugerencia con fecha limite en el pasado devuelve 422 (naceria vencida)."""
+    r = client.post("/api/sugerencias-manuales", json={
+        "producto": "20 BXO5W30AA", "sucursal_id": "LINDEROS",
+        "unidades": 5, "expira_en": "2020-01-01",
+    })
+    assert r.status_code == 422
+    r = client.post("/api/sugerencias-manuales", json={
+        "producto": "20 BXO5W30AA", "sucursal_id": "LINDEROS",
+        "unidades": 5, "expira_en": "9999-12-31",
+    })
+    assert r.status_code == 422
+
+
+def test_manual_vencida_no_suma_en_chatbot_tool(db_session):
+    """La tool del chatbot excluye manuales vencidas igual que la grilla y el carro."""
+    from datetime import datetime, timedelta, timezone
+
+    from src.models import SugerenciaManual
+    from src.services.chatbot_service import _tool_obtener_sugerido
+
+    db_session.add(SugerenciaManual(
+        tenant_id="curifor", producto="20 BXO5W30AA", sucursal_id="LINDEROS",
+        unidades=99, creado_por="test@curifor.com",
+        expira_en=datetime.now(timezone.utc) - timedelta(days=1),
+    ))
+    db_session.commit()
+    out = _tool_obtener_sugerido(db_session, "20 BXO5W30AA", "LINDEROS")
+    assert out["ajuste_manual_vigente"] == 0
