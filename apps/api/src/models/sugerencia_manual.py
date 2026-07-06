@@ -30,6 +30,12 @@ class SugerenciaManual(Base):
 
     creado_por: Mapped[str | None] = mapped_column(String, nullable=True)
     creado_en: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=_now)
+    # Fecha en que la sugerencia deja de tener efecto. NULL = no vence (vive hasta que
+    # se elimine a mano). Al pasar esta fecha el cron diario la archiva, y las sumas del
+    # sugerido la excluyen al instante (sin esperar al cron).
+    expira_en: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
 
     aprobado: Mapped[bool] = mapped_column(Boolean, default=False)
     usado_en_compra: Mapped[bool] = mapped_column(Boolean, default=False)

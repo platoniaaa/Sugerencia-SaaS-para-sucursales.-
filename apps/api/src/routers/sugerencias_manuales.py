@@ -1,7 +1,32 @@
 """Endpoints CRUD de las sugerencias manuales."""
+from datetime import date, datetime, timedelta, timezone
+from zoneinfo import ZoneInfo
+
 from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import select
 from sqlalchemy.orm import Session
+
+# Zona horaria del negocio: el vencimiento se ancla a la medianoche de Chile.
+# Si se anclara a UTC, el ultimo dia se recortaria 3-4 horas (la sugerencia
+# dejaria de sumar a las 20:00-21:00 hora chilena del propio dia elegido).
+TZ_CHILE = ZoneInfo("America/Santiago")
+
+
+def _expira_en(fecha_limite: date | None) -> datetime | None:
+    """Convierte la fecha limite (inclusive) en el instante de vencimiento.
+
+    La sugerencia vive todo el dia elegido (hora de Chile) y vence al comenzar
+    el dia siguiente. None si no se pidio fecha limite."""
+    if not fecha_limite:
+        return None
+    if fecha_limite < datetime.now(TZ_CHILE).date():
+        raise HTTPException(status_code=422, detail="La fecha limite ya paso.")
+    if fecha_limite.year > 2100:
+        raise HTTPException(status_code=422, detail="Fecha limite demasiado lejana.")
+    inicio = datetime(
+        fecha_limite.year, fecha_limite.month, fecha_limite.day, tzinfo=TZ_CHILE
+    )
+    return (inicio + timedelta(days=1)).astimezone(timezone.utc)
 
 from ..config import get_settings
 from ..db import get_db
@@ -82,6 +107,7 @@ def crear(
         motivo=payload.motivo,
         creado_por=email,
         tenant_id=settings.default_tenant_id,
+        expira_en=_expira_en(payload.expira_en),
     )
     db.add(s)
     db.flush()
@@ -122,6 +148,7 @@ def crear_masiva(
     omitidas = 0
     nuevas: list[SugerenciaManual] = []
     lote_id = str(_uuid_mod.uuid4())
+    expira_en = _expira_en(payload.expira_en)
     if payload.dias_inventario:
         mapa = sugerido_service.unidades_por_par(db, pares, payload.dias_inventario)
         for par in pares:
@@ -134,7 +161,7 @@ def crear_masiva(
                     producto=par[0], sucursal_id=par[1], unidades=u,
                     motivo=payload.motivo, creado_por=email,
                     tenant_id=settings.default_tenant_id,
-                    lote_id=lote_id,
+                    lote_id=lote_id, expira_en=expira_en,
                 )
             )
     elif payload.unidades:
@@ -143,7 +170,7 @@ def crear_masiva(
                 producto=p, sucursal_id=s, unidades=payload.unidades,
                 motivo=payload.motivo, creado_por=email,
                 tenant_id=settings.default_tenant_id,
-                lote_id=lote_id,
+                lote_id=lote_id, expira_en=expira_en,
             )
             for p, s in pares
         ]

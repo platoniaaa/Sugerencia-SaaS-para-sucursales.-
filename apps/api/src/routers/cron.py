@@ -24,6 +24,9 @@ def procesar_recurrentes(
     x_cron_secret: str | None = Header(default=None),
     db: Session = Depends(get_db),
 ) -> dict:
-    """Crea las sugerencias manuales de las reglas recurrentes que tocan hoy."""
+    """Crea las sugerencias de las reglas recurrentes que tocan hoy y archiva las
+    sugerencias manuales cuya duracion ya vencio."""
     _verificar(x_cron_secret)
-    return recurrentes_service.procesar(db)
+    resultado = recurrentes_service.procesar(db)
+    resultado["expiradas_archivadas"] = recurrentes_service.archivar_expiradas(db)
+    return resultado

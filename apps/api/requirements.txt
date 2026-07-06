@@ -17,6 +17,10 @@ httpx>=0.28
 # funciona en cualquier version de Python (incluida 3.14) y en la nube.
 pg8000>=1.31
 
+# Base de datos IANA de zonas horarias para zoneinfo (America/Santiago) en Windows,
+# donde el sistema no la trae. En Linux (Render) es redundante pero inocuo.
+tzdata>=2025.1
+
 # Chatbot via Gemini API (free tier de Google AI Studio).
 google-genai>=0.8
 

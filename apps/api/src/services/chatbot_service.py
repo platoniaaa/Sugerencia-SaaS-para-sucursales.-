@@ -81,7 +81,11 @@ COMO RESPONDER:
   ABC, vistas, gotchas de DAX), apoyate en el CONTEXTO DEL MODELO de mas abajo.
 - El CONTEXTO DEL MODELO se mantiene a mano y puede no reflejar cambios muy
   recientes del Power BI. Si la pregunta depende de un detalle fino o reciente del
-  modelo, responde con lo que sabes pero sugiere verificar con Francisco.
+  modelo, responde con lo que sabes pero sugiere verificar con el equipo.
+- El CONTEXTO DEL MODELO nombra a personas del proyecto (Francisco, Marilyn "la
+  Mary", Andres). Son referencias del negocio, NO necesariamente quien te escribe.
+  No trates al usuario por ninguno de esos nombres ni asumas quien es; si no sabes
+  su nombre, simplemente no lo uses.
 - Si te falta un dato, pedi clarificacion (codigo de producto, sucursal, etc.).
 - Para explicar "por que tal sugerido", trae los numeros reales con las tools y
   explica el calculo usando las reglas del modelo.
@@ -142,6 +146,7 @@ def _tool_obtener_sugerido(db: Session, producto: str, sucursal: str) -> dict:
             SugerenciaManual.producto == producto,
             SugerenciaManual.sucursal_id == sucursal,
             SugerenciaManual.archivada.is_(False),
+            sugerido_service._no_vencida(),
         )
     ) or 0
     return {

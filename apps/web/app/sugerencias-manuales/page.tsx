@@ -10,6 +10,24 @@ import type { Recurrente, SugerenciaManual } from "@/lib/types";
 
 type Tab = "unicas" | "recurrentes";
 
+// expira_en apunta a la medianoche del día SIGUIENTE a la fecha límite elegida
+// (la sugerencia vive todo ese día). Para mostrar la fecha límite inclusive se
+// resta un minuto al instante de vencimiento.
+function fechaLimite(expiraEn: string): string {
+  const d = new Date(expiraEn);
+  if (Number.isNaN(d.getTime())) return "—";
+  return formatoFecha(new Date(d.getTime() - 60000).toISOString());
+}
+
+function BadgeVencimiento({ expiraEn }: { expiraEn: string }) {
+  const vencida = new Date(expiraEn).getTime() <= Date.now();
+  return vencida ? (
+    <Badge className="bg-red-50 text-red-700">vencida — ya no suma</Badge>
+  ) : (
+    <Badge className="bg-amber-50 text-amber-700">hasta el {fechaLimite(expiraEn)}</Badge>
+  );
+}
+
 export default function SugerenciasManualesPage() {
   const [tab, setTab] = useState<Tab>("unicas");
   const [unicas, setUnicas] = useState<SugerenciaManual[] | null>(null);
@@ -199,6 +217,7 @@ function SeccionUnicas({
                 <Badge className="bg-emerald-50 text-emerald-700">
                   +{formatoNumero(s.unidades)} u
                 </Badge>
+                {s.expira_en && <BadgeVencimiento expiraEn={s.expira_en} />}
               </div>
               <p className="mt-1 text-[12px] text-slate-500">
                 {s.creado_por && <>{s.creado_por} · </>}
@@ -260,6 +279,7 @@ function LoteCard({
                 <Badge className="bg-emerald-50 text-emerald-700">
                   +{formatoNumero(totalUnidades)} u en total
                 </Badge>
+                {primera?.expira_en && <BadgeVencimiento expiraEn={primera.expira_en} />}
               </div>
               <p className="mt-1 text-[12px] text-slate-500">
                 {primera?.creado_por && <>{primera.creado_por} · </>}

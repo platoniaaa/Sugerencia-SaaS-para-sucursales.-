@@ -4,6 +4,7 @@ NOTA Fase 0: aca NO se calcula el sugerido. Los valores ya vienen del Power BI.
 Solo se filtra/agrega lo que ya esta cargado en la tabla.
 """
 import math
+from datetime import datetime, timezone
 
 from sqlalchemy import distinct, func, or_, select
 from sqlalchemy.orm import Session
@@ -143,6 +144,15 @@ def _row_desde_catalogo(c: ProductoCatalogo) -> dict:
     }
 
 
+def _no_vencida():
+    """Clausula: la sugerencia no tiene vencimiento o aun no llega. Asi una manual con
+    duracion deja de sumar exactamente al vencer, sin esperar a que el cron la archive."""
+    return or_(
+        SugerenciaManual.expira_en.is_(None),
+        SugerenciaManual.expira_en > datetime.now(timezone.utc),
+    )
+
+
 def _manuales_por_par(db: Session, q: str | None = None) -> dict[tuple[str, str], int]:
     """Devuelve {(producto, sucursal_id): unidades vigentes} de sugerencias manuales.
 
@@ -154,7 +164,7 @@ def _manuales_por_par(db: Session, q: str | None = None) -> dict[tuple[str, str]
             SugerenciaManual.sucursal_id,
             func.sum(SugerenciaManual.unidades).label("total"),
         )
-        .where(SugerenciaManual.archivada.is_(False))
+        .where(SugerenciaManual.archivada.is_(False), _no_vencida())
         .group_by(SugerenciaManual.producto, SugerenciaManual.sucursal_id)
     )
     if q:
@@ -554,7 +564,7 @@ def listar_por_ids(db: Session, ids: list[int]) -> list[dict]:
             SugerenciaManual.sucursal_id,
             func.sum(SugerenciaManual.unidades).label("total"),
         )
-        .where(SugerenciaManual.archivada.is_(False))
+        .where(SugerenciaManual.archivada.is_(False), _no_vencida())
         .where(SugerenciaManual.producto.in_(productos_unicos))
         .group_by(SugerenciaManual.producto, SugerenciaManual.sucursal_id)
     )

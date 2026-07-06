@@ -48,6 +48,7 @@ export function ModalSugerenciaManual({
   // Comunes
   const [tipoCantidad, setTipoCantidad] = useState<TipoCantidad>("dias");
   const [cantidad, setCantidad] = useState("");
+  const [fechaLimite, setFechaLimite] = useState("");
   const [motivo, setMotivo] = useState("");
   const [guardando, setGuardando] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -77,11 +78,21 @@ export function ModalSugerenciaManual({
     [sucursales]
   );
 
+  // Mínimo del calendario: hoy en hora LOCAL (no se puede elegir una fecha límite
+  // en el pasado). Con toISOString() directo (UTC), de noche en Chile el datepicker
+  // bloqueaba elegir "hoy" porque en UTC ya era mañana.
+  const hoyISO = useMemo(() => {
+    const d = new Date();
+    d.setMinutes(d.getMinutes() - d.getTimezoneOffset());
+    return d.toISOString().slice(0, 10);
+  }, []);
+
   useEffect(() => {
     if (open) {
       setModo("individual");
       setTipoCantidad("dias");
       setCantidad("");
+      setFechaLimite("");
       setMotivo("");
       setError(null);
       setProducto(productoInicial ?? "");
@@ -156,6 +167,9 @@ export function ModalSugerenciaManual({
     }
     const cantidadPayload =
       tipoCantidad === "dias" ? { dias_inventario: n } : { unidades: n };
+    // Fecha límite de vigencia. Solo aplica a sugerencias no recurrentes: las
+    // recurrencias controlan su fin con "Hasta (fecha)".
+    const expiraEn = !recurrente && fechaLimite ? fechaLimite : undefined;
     const dias = parseInt(cadaDias, 10);
     if (recurrente && (!dias || dias <= 0)) {
       setError("Para repetir, indica cada cuántos días (entero positivo).");
@@ -201,11 +215,12 @@ export function ModalSugerenciaManual({
           producto,
           sucursal_id: sucursal,
           ...cantidadPayload,
+          expira_en: expiraEn,
           motivo: motivo || undefined,
         });
       } else {
         const r = await api.crearSugerenciaMasiva(
-          filtrosModo, cantidadPayload, motivo || undefined
+          filtrosModo, cantidadPayload, motivo || undefined, expiraEn
         );
         if (r.omitidas > 0) {
           // Avisa pero igual cerramos: las creadas ya se aplicaron.
@@ -455,6 +470,25 @@ export function ModalSugerenciaManual({
             </p>
           )}
         </div>
+
+        {/* Fecha límite: hasta cuándo la sugerencia sigue vigente (no aplica a recurrentes). */}
+        {!recurrente && (
+          <div>
+            <Label htmlFor="fechalim">Fecha límite (opcional)</Label>
+            <Input
+              id="fechalim"
+              type="date"
+              min={hoyISO}
+              value={fechaLimite}
+              onChange={(e) => setFechaLimite(e.target.value)}
+            />
+            <p className="mt-1 text-[11px] text-slate-500">
+              Hasta esa fecha (incluida) la sugerencia suma a la compra; al día
+              siguiente se archiva automáticamente. Déjalo vacío para que no venza.
+            </p>
+          </div>
+        )}
+
         <div>
           <Label htmlFor="mot">Motivo (opcional)</Label>
           <Textarea

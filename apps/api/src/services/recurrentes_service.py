@@ -6,7 +6,7 @@ instancia que ella misma creó antes y crea una nueva, así no se acumulan.
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 
 from sqlalchemy import select, update
 from sqlalchemy.orm import Session
@@ -205,6 +205,35 @@ def procesar(db: Session, hoy: date | None = None) -> dict:
         )
     db.commit()
     return {"recurrencias_procesadas": procesadas, "sugerencias_creadas": creadas}
+
+
+def archivar_expiradas(db: Session, ahora: datetime | None = None) -> int:
+    """Archiva las sugerencias manuales cuya fecha de vencimiento ya paso.
+
+    Archivar (no borrar) preserva el historial, igual que con las instancias de un
+    ciclo recurrente anterior. Las sumas del sugerido ya las excluyen al instante via
+    expira_en; esto es la limpieza diaria que las saca del listado vigente. Devuelve
+    cuantas archivo.
+    """
+    ahora = ahora or datetime.now(timezone.utc)
+    res = db.execute(
+        update(SugerenciaManual)
+        .where(
+            SugerenciaManual.archivada.is_(False),
+            SugerenciaManual.expira_en.isnot(None),
+            SugerenciaManual.expira_en <= ahora,
+        )
+        .values(archivada=True)
+    )
+    n = res.rowcount or 0
+    if n:
+        auditoria_service.registrar(
+            db, accion="expiradas_archivadas", entidad="sugerencia_manual",
+            usuario_email="cron",
+            detalle=f"Vencimiento automatico: {n} sugerencia(s) manual(es) archivada(s)",
+        )
+    db.commit()
+    return n
 
 
 def resumen(rec: SugerenciaRecurrente) -> str:

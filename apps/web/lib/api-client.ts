@@ -203,6 +203,7 @@ export const api = {
     sucursal_id: string;
     unidades?: number;
     dias_inventario?: number;
+    expira_en?: string; // fecha límite YYYY-MM-DD; vacío = no vence
     motivo?: string;
   }): Promise<SugerenciaManual> {
     const res = await req("/api/sugerencias-manuales", {
@@ -220,12 +221,13 @@ export const api = {
   async crearSugerenciaMasiva(
     filtros: SugeridoFiltros,
     cantidad: { unidades?: number; dias_inventario?: number },
-    motivo?: string
+    motivo?: string,
+    expiraEn?: string
   ): Promise<{ creadas: number; omitidas: number; lote_id: string | null }> {
     const res = await req("/api/sugerencias-manuales/masiva", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filtros, ...cantidad, motivo }),
+      body: JSON.stringify({ filtros, ...cantidad, expira_en: expiraEn, motivo }),
     });
     if (!res.ok) {
       const err = await res.json().catch(() => ({}));

@@ -11,7 +11,7 @@ from sqlalchemy.orm import Session
 
 from ..models import ProductoCatalogo, Sugerido, SugerenciaManual
 from ..schemas import CarroProveedor, CarrosResponse, LineaCarro, SugeridoFiltros
-from .sugerido_service import _apply_filters
+from .sugerido_service import _apply_filters, _no_vencida
 
 
 def _manuales_vigentes_subq():
@@ -22,7 +22,7 @@ def _manuales_vigentes_subq():
             SugerenciaManual.sucursal_id.label("sucursal_id"),
             func.sum(SugerenciaManual.unidades).label("manual"),
         )
-        .where(SugerenciaManual.archivada.is_(False))
+        .where(SugerenciaManual.archivada.is_(False), _no_vencida())
         .group_by(SugerenciaManual.producto, SugerenciaManual.sucursal_id)
         .subquery()
     )
@@ -88,7 +88,7 @@ def carros_por_proveedor(db: Session, f: SugeridoFiltros) -> CarrosResponse:
                 SugerenciaManual.producto,
                 func.sum(SugerenciaManual.unidades).label("manual"),
             )
-            .where(SugerenciaManual.archivada.is_(False))
+            .where(SugerenciaManual.archivada.is_(False), _no_vencida())
             .group_by(SugerenciaManual.producto)
             .having(func.sum(SugerenciaManual.unidades) > 0)
         ).all()

@@ -12,6 +12,10 @@ class SugerenciaManualCreate(BaseModel):
     sucursal_id: str
     unidades: int | None = Field(default=None, gt=0, description="Unidades adicionales (si modo='unidades')")
     dias_inventario: int | None = Field(default=None, gt=0, description="Dias de inventario adicional (si modo='dias')")
+    expira_en: date | None = Field(
+        default=None,
+        description="Fecha limite (inclusive) hasta la que la sugerencia sigue vigente; al pasar se archiva. None = no vence.",
+    )
     motivo: str | None = None
 
 
@@ -21,6 +25,10 @@ class SugerenciaManualMasiva(BaseModel):
     filtros: SugeridoFiltros = Field(default_factory=SugeridoFiltros)
     unidades: int | None = Field(default=None, gt=0)
     dias_inventario: int | None = Field(default=None, gt=0)
+    expira_en: date | None = Field(
+        default=None,
+        description="Fecha limite (inclusive) hasta la que las sugerencias siguen vigentes; al pasar se archivan. None = no vencen.",
+    )
     motivo: str | None = None
 
 
@@ -53,6 +61,7 @@ class SugerenciaManualOut(BaseModel):
     usado_en_compra: bool
     archivada: bool = False
     lote_id: str | None = None  # UUID compartido por las filas de una misma carga masiva
+    expira_en: datetime | None = None  # Fecha en que se archiva; None = no vence
 
 
 class RecurrenteCreate(BaseModel):
