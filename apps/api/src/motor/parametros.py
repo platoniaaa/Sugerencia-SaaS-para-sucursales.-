@@ -151,6 +151,21 @@ PRIORIDAD_CD = {
 }
 PRIORIDAD_CD_DEFAULT = 99
 
+# Sucursales operativas de venta candidatas al traslado lateral, en el orden
+# exacto de la medida "Traslado desde Otras Sucursales" (desempate estable).
+SUCURSALES_OPERATIVAS = (
+    "LINDEROS",
+    "CURICO",
+    "TALCA",
+    "RANCAGUA",
+    "DIEZ DE JULIO (2)",
+    "CHILLAN",
+    "BRASIL 18",
+    "PLACILLA",
+    "CHILLAN VIEJO",
+    "TALCA (2)",
+)
+
 # --- Stock por bodega (columnas fijas del contrato de salida) --------------------
 
 # Espejo de las columnas del modelo/plataforma: si se agrega una sucursal hay que
