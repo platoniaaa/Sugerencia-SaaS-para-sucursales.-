@@ -12,7 +12,11 @@ venv/
 *.db
 *.sqlite
 *.sqlite3
-apps/api/data/
+# data/: crudos de SharePoint y golden snapshots NO se versionan (datos de la
+# empresa); solo el README que documenta qué descargar.
+apps/api/data/**
+!apps/api/data/crudos/
+!apps/api/data/crudos/README.md
 apps/api/uploads/
 
 # --- Node / frontend ---

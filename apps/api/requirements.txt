@@ -24,5 +24,11 @@ tzdata>=2025.1
 # Chatbot via Gemini API (free tier de Google AI Studio).
 google-genai>=0.8
 
+# Motor de sugerido (reemplazo de Power BI): dataframes columnar + SQL analitico
+# para el volumen de ventas (~1.4M filas), y lector rapido de .xlsx para polars.
+polars>=1.17
+duckdb>=1.1
+fastexcel>=0.12
+
 # Solo para tests
 pytest>=8.3
