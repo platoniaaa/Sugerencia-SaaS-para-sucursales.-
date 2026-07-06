@@ -25,7 +25,14 @@ def _proveedor_lt(abc: pl.DataFrame, seg: pl.DataFrame) -> pl.DataFrame:
     )
 
     def _min_por(df, keys, nombre):
-        return df.group_by(keys).agg(pl.col("RazonSocial").min().alias(nombre))
+        # MIN de DAX sobre texto es case-insensitive; el min() de polars ordena
+        # por bytes (mayúsculas < minúsculas). Ordenar por clave en minúscula.
+        return df.group_by(keys).agg(
+            pl.col("RazonSocial")
+            .sort_by(pl.col("RazonSocial").str.to_lowercase())
+            .first()
+            .alias(nombre)
+        )
 
     combos = abc.select(["producto_master", "sucursal_final"])
     r = (

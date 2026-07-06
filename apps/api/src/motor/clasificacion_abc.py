@@ -129,7 +129,34 @@ def calcular_abc(
             .otherwise(pl.lit("D"))
         )
 
-    return abc.with_columns(
+    base = abc.with_columns(
         switch_expr("m3", "m6", "m12").alias("clasificacion_abc"),
         switch_expr("m3a", "m6a", "m12a").alias("clasificacion_abc_agregada"),
     )
+
+    # Filas sintéticas del CD (routing de centralización): productos con cola
+    # C/D local y agregada A/B que no tienen fila propia en el CD. Nacen con
+    # m3/m6/m12 = 0 y clase local "D" (igual que FilasCDExtra en el DAX).
+    cola = base.filter(
+        pl.col("clasificacion_abc").is_in(["C", "D"])
+        & pl.col("clasificacion_abc_agregada").is_in(["A", "B"])
+    ).select("producto_master").unique()
+    existentes = base.filter(pl.col("sucursal_final") == P.CD_ID).select("producto_master").unique()
+    extra = cola.join(existentes, on="producto_master", how="anti")
+    if extra.height:
+        info_agg = base.select(
+            ["producto_master", "m3a", "m6a", "m12a", "clasificacion_abc_agregada"]
+        ).unique(subset=["producto_master"])
+        filas = (
+            extra.join(info_agg, on="producto_master", how="left")
+            .with_columns(
+                pl.lit(P.CD_ID).alias("sucursal_final"),
+                pl.lit(0).alias("m3"),
+                pl.lit(0).alias("m6"),
+                pl.lit(0).alias("m12"),
+                pl.lit("D").alias("clasificacion_abc"),
+            )
+            .select(base.columns)
+        )
+        base = pl.concat([base, filas], how="vertical_relaxed")
+    return base
