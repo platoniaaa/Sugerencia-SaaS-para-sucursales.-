@@ -53,25 +53,38 @@ desactualizado respecto a lo que ve la plataforma vía Power BI.
 - **Credenciales**: faltan (usuario/clave de `BDFlexline`, o autenticación integrada de Windows). Las tiene el admin del ERP Flexline. No van al repo: `.env` / secreto del host.
 - **Consulta**: `SELECT` de solo lectura sobre la tabla `Tmp_*` (son tablas temporales/staging que el ERP refresca). Verificar con el admin cada cuánto se refrescan esas `Tmp_` (si es intradía, el seguimiento fresco tiene sentido; si es diario, empata con la sync actual).
 
-### Referencia de conexión (para cuando haya credenciales)
+### Las TRES fuentes SQL confirmadas (desde las particiones M del modelo)
 
-```python
-# pytds (sin driver ODBC del sistema)
-import pytds, polars as pl
-with pytds.connect(server="10.50.15.2", database="BDFlexline",
-                   user=USER, password=PWD) as conn:  # credenciales por env
-    cur = conn.cursor()
-    cur.execute("SELECT Producto, SucursalID, RazonSocial, FechaOC, NOC, "
-                "Origen, MotivoCompra, EstadoOC, Cantidad "
-                "FROM Tmp_SeguimientoCompraNacional")  # nombres exactos: VERIFICAR
-    filas = cur.fetchall()
-df = pl.DataFrame(filas, schema=[...])
-```
+Todas en `Sql.Database("10.50.15.2", "BDFlexline", ...)`:
 
-⚠ **Los nombres exactos de columna de la tabla SQL NO están verificados** (el modelo
-los renombra en Power Query). Antes de escribir el adaptador hay que hacer un
-`SELECT TOP 10 *` y mapear a los nombres que el motor espera (RazonSocial, FechaOC,
-NOC, Origen, Motivo, EstadoOC, Cantidad, EstadoDoc, FechaDoc).
+| Fuente | Tabla / query | Empresa | Notas |
+|---|---|---|---|
+| Seguimiento nacional | `Tmp_SeguimientoCompraNacional` | E01 | trae `[Fecha Orden de Compra]` y `[Fecha Documento P/E]` → insumo del lead time |
+| Ventas Curifor | `Tmp_ProdMensualPostVta` (fecha ≥ 2018-12-31) | E01 | + anexa histórico `Produccion Post Venta Historico (2)` |
+| Ventas Frontera | query `Informe Gestión ...` (CASE de SUCURSAL en SQL) | E07 | el SQL ya devuelve SUCURSAL mapeado |
+
+**Ojo — el seguimiento de FRONTERA NO es SQL:** es un Excel de SharePoint
+(`AbastecimientoyLogstica-DataBI/.../Frontera - Seguimiento de Compras.xlsx`). Lo SQL
+en Frontera son las **ventas** (E07). El seguimiento importado es otra fuente aparte.
+
+**SucursalID** (seguimiento): no viene del SQL, lo deriva el modelo con un SWITCH
+sobre el código de local (`SUC020`→CHILLAN, `SUC070`→LINDEROS, `SUC280`→CD REPUESTOS,
+…). Replicado en `conectores/sql_flexline.SUCURSAL_ID_MAP`.
+
+### Conector implementado (07-jul-2026): `conectores/sql_flexline.py`
+
+Módulo listo para credenciales, **no ejecutado** (necesita creds del ERP + `pip install
+python-tds` + correr en la LAN de Curifor). Contiene:
+- Los queries SQL verbatim (seguimiento nacional acotado a lo que usa el motor; ventas Curifor).
+- Las transformaciones puras que el modelo hace después (mapeo SucursalID, tag Origen
+  "Curifor Nacional", CantidadAjustada con la lista de NC, filtro tipoproducto=repuestos),
+  **verificadas con tests offline** (`tests_motor/test_conector_sql.py`, datos sintéticos).
+- `conectar()` (credenciales por env `FLEXLINE_SQL_USER`/`FLEXLINE_SQL_PASSWORD`),
+  `leer_seguimiento()`, `leer_ventas_curifor()`.
+
+Pendiente para completarlo: (1) pegar el query E07 completo de Frontera (`VENTAS_FRONTERA_QUERY`
+= None hoy); (2) anexar el histórico de ventas Curifor; (3) unir seguimiento importado +
+Frontera-Excel; (4) un `SELECT TOP 10` real para confirmar dtypes de fecha/números.
 
 ---
 
