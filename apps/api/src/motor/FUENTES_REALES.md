@@ -141,10 +141,24 @@ más simple para la v1, dejando Graph para cuando se quiera correr 100% headless
 1. ~~Etapa lead-time-desde-seguimiento~~ **HECHO** (`lead_time_proveedor.py`, paridad 100%).
 2. **Verificar nombres reales** de la tabla SQL del seguimiento (`SELECT TOP 10`) y del
    catálogo/stock Excel; completar las columnas de brecha (Costo, Descripcion, etc.).
-3. **Adaptador de fuentes** `fuentes_reales.py`: una función por entrada que lee del
-   crudo real y devuelve el mismo esquema que hoy espera `cargar_fuentes()`. Validar
-   cada una comparando su salida contra el CSV de paridad correspondiente.
+3. **Adaptador de fuentes** `fuentes_reales.py` — EN CURSO: orquestador
+   `cargar_fuentes_reales()` que arma el dict `fuentes` desde los crudos. Ya
+   implementado y probado el **lector de stock** (`leer_stock`): lee `Stock
+   bodegas[ frontera].xlsx` (Hoja1), mapea Bodega→SucursalID con el SWITCH del
+   modelo (case-insensitive) y saca `stock`, `stock_frontera` y `costo`. Falta:
+   ventas/seguimiento en vivo (SQL, credenciales) y las tablas chicas y estables
+   (mapeo, dim_producto, dim_sucursal, importados) que hoy salen de un **snapshot
+   CSV** — son tablas calculadas complejas del modelo (`Mapeo Producto Master` arma
+   grupos de reemplazo desde el mix con resolución de conflictos; `Dim Producto` se
+   deriva de ventas+stock+seguimiento). Snapshotearlas es válido para v1 (cambian poco);
+   replicar su DAX queda para después si se quiere 100% en vivo.
 4. **Replicar CantidadAjustada** sobre las ventas crudas (signo de NC).
+
+Archivos locales reales confirmados (en `~/Downloads/`): `Stock bodegas.xlsx`
+(Hoja1, 34 col: Producto, Bodega, Stock, Costo, Categoria…), `BASE NUEVO MIX
+2026_1.xlsx` (mix: Producto, Reem1-3), `Listado Maestro Repuestos.xlsx` (catálogo).
+El modelo los lee de SharePoint; las copias locales sirven para desarrollar/validar
+los lectores. Ventas y seguimiento NO son locales (SharePoint/SQL).
 5. Recién entonces, **Graph/headless** si se quiere sacar el motor del PC de la oficina.
 
 Cada paso es validable contra los goldens ya congelados en `tests_motor/fixtures/`,
