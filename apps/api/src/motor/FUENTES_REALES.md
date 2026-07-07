@@ -27,8 +27,9 @@ el motor consume hoy (headers de los CSV de paridad).
 | `seguimiento_transito` | + Cantidad, EstadoOC, EstadoDoc, FechaDoc | mismo seguimiento (todas las columnas) | SQL + Excel |
 | `stock` (`stock_bodegas`) | Producto, SucursalID, Stock (+ **Costo** para costo_unitario) | `Stock bodegas.xlsx` (SharePoint `AbastecimientoyLogstica-DataBI`) | Excel |
 | `stock_frontera` | Producto, SucursalID, Stock | `Stock bodegas Frontera.xlsx` | Excel |
-| `lt_proveedor` | Razón Social Proveedor, Lead Time Dias | **DERIVADO** (lo calcula el modelo desde el seguimiento) | ⚠ derivado |
-| `lt_proveedor_sucursal` | + SucursalID, N Muestras | **DERIVADO** (idem, por sucursal) | ⚠ derivado |
+| ~~`lt_proveedor`~~ | Razón Social Proveedor, Lead Time Dias | **YA NO se consume**: el motor lo CALCULA desde el seguimiento (`lead_time_proveedor.py`) | ✅ resuelto |
+| ~~`lt_proveedor_sucursal`~~ | + SucursalID, N Muestras | idem, calculado por proveedor+sucursal | ✅ resuelto |
+| `seguimiento_lt` | RazonSocial, SucursalID, FechaOC, **FechaPE**, Origen, Motivo | 'Seguimiento Compras Unificado' (mismo SQL + Excel) — insumo del cálculo de LT | SQL + Excel |
 | `importados` | Producto | `distinct` de la tabla de seguimiento importado | Excel |
 
 ---
@@ -90,14 +91,13 @@ Frontera-Excel; (4) un `SELECT TOP 10` real para confirmar dtypes de fecha/núme
 
 ## Brechas (lo que NO es mecánico)
 
-1. **Lead time derivado (la brecha grande).** `lt_proveedor` y `lt_proveedor_sucursal`
-   NO son crudos: el modelo los calcula desde el seguimiento (medida `LT Promedio
-   Dias` = días entre Fecha OC y Fecha PE, excluyendo outliers > 30 días). Hoy el
-   motor los consume como entrada. Para independizarse hay que **implementar esa
-   agregación en el motor** (una etapa nueva: seguimiento → tabla de lead times).
-   Bueno: tengo el golden (`lt_proveedor.csv` / `lt_proveedor_sucursal.csv`) para
-   validar esa nueva etapa con paridad, igual que las otras cinco. Requiere extraer
-   el DAX exacto de `LT Promedio Dias` / `Promedio Días OC a PE` del modelo.
+1. ~~Lead time derivado (la brecha grande)~~ **RESUELTO (07-jul-2026):** `lead_time_proveedor.py`
+   calcula las tablas de lead time desde el seguimiento (días OC→P/E; percentil de
+   corte 0.7/0.8 según predominancia de nacionales-reposición; promedio bajo el corte).
+   **Paridad 100%** contra las tablas del modelo (`Lead Time Proveedor` 84/84,
+   `Lead Time Proveedor Sucursal` 229/229 en Lead Time y N Muestras). El pipeline lo
+   usa automáticamente si está `seguimiento_lt.csv` (con Fecha P/E); si no, cae a las
+   tablas del modelo. Con esto NO queda ninguna dependencia de tablas derivadas.
 
 2. **Columnas del contrato hoy vacías** (ver docstring de `pipeline.py`):
    - `Descripcion`, `FILTRO1_Final`, `Unidad de Medida` → del catálogo maestro
@@ -138,9 +138,7 @@ más simple para la v1, dejando Graph para cuando se quiera correr 100% headless
 
 ## Orden recomendado de trabajo (cuando se retome)
 
-1. **Etapa lead-time-desde-seguimiento** en el motor (extraer DAX de `LT Promedio Dias`,
-   implementar, validar contra el golden `lt_proveedor*.csv`). Elimina la última
-   dependencia de una tabla derivada del modelo.
+1. ~~Etapa lead-time-desde-seguimiento~~ **HECHO** (`lead_time_proveedor.py`, paridad 100%).
 2. **Verificar nombres reales** de la tabla SQL del seguimiento (`SELECT TOP 10`) y del
    catálogo/stock Excel; completar las columnas de brecha (Costo, Descripcion, etc.).
 3. **Adaptador de fuentes** `fuentes_reales.py`: una función por entrada que lee del

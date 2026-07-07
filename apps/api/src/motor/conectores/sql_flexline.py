@@ -17,8 +17,9 @@ red de Curifor (10.50.15.2 es IP privada de la LAN). Las funciones de transforma
 pura (mapeo de sucursal, cantidad ajustada, normalización) SÍ están cubiertas por
 tests offline con datos sintéticos (`tests_motor/test_conector_sql.py`).
 
-Lo que NO cubre (ver FUENTES_REALES.md): el seguimiento importado y el de Frontera
-(este último es un Excel de SharePoint, no SQL), y la etapa lead-time-desde-seguimiento.
+El seguimiento nacional trae Fecha P/E, que alimenta el cálculo de lead time
+(`lead_time_proveedor.py`). Lo que NO cubre (ver FUENTES_REALES.md): el seguimiento
+importado y el de Frontera (este último es un Excel de SharePoint, no SQL).
 """
 from __future__ import annotations
 

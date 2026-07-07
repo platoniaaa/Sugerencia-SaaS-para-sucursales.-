@@ -31,6 +31,7 @@ from . import parametros as P
 from .clasificacion_abc import calcular_abc
 from .demanda import calcular_demanda
 from .lead_time import calcular_lead_time
+from .lead_time_proveedor import calcular_lead_time_proveedor, calcular_lead_time_proveedor_sucursal
 from .safety_stock import calcular_safety_stock
 from .sugerido import _grupo_reemplazos, _stock_activo, calcular_sugerido
 from .traslados import calcular_traslados
@@ -76,6 +77,11 @@ def cargar_fuentes(directorio: str | Path) -> dict[str, pl.DataFrame]:
     if costo.exists():
         # Costo llega como texto (trae placeholders " -"); se castea con VALUE al usarlo.
         fuentes["costo"] = pl.read_csv(costo, infer_schema_length=0)
+    # Seguimiento con Fecha P/E: si está, el motor CALCULA las tablas de lead time
+    # (en vez de leer lt_proveedor*.csv que derivan del modelo).
+    seg_lt = d / "seguimiento_lt.csv"
+    if seg_lt.exists():
+        fuentes["seguimiento_lt"] = _csv("seguimiento_lt.csv", try_parse_dates=True)
     return fuentes
 
 
@@ -126,8 +132,14 @@ def ejecutar(
     # Etapas 1-5 (cada una con paridad 100% demostrada contra el modelo).
     abc = calcular_abc(ventas, mapeo, dim_p, fin_mes_cerrado)
     dem = calcular_demanda(ventas, mapeo, dim_p, abc, fin_mes_cerrado)
-    lt = calcular_lead_time(abc, fuentes["seguimiento"], fuentes["lt_proveedor"],
-                            fuentes["lt_proveedor_sucursal"], dim_s, importados)
+    # Tablas de lead time: calculadas desde el seguimiento (fresco) si está, si no
+    # se leen las que derivan del modelo (lt_proveedor*.csv).
+    if "seguimiento_lt" in fuentes:
+        lt_prov = calcular_lead_time_proveedor(fuentes["seguimiento_lt"])
+        lt_prov_suc = calcular_lead_time_proveedor_sucursal(fuentes["seguimiento_lt"])
+    else:
+        lt_prov, lt_prov_suc = fuentes["lt_proveedor"], fuentes["lt_proveedor_sucursal"]
+    lt = calcular_lead_time(abc, fuentes["seguimiento"], lt_prov, lt_prov_suc, dim_s, importados)
     ss = calcular_safety_stock(lt, dem)
     sug = calcular_sugerido(ss, dem, fuentes["stock"], fuentes["stock_frontera"],
                             fuentes["seguimiento_transito"], mapeo, hoy)

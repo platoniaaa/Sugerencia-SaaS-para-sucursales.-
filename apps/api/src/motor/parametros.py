@@ -89,6 +89,18 @@ CICLO_ORDEN_DIAS = 5          # compra directa al proveedor
 CICLO_ORDEN_DIAS_CD = 3       # cuando la sucursal se abastece del CD
 LT_FALLBACK_DIAS = 8          # sin proveedor o sin historial de OC
 
+# --- Cálculo del lead time por proveedor desde el seguimiento (OC -> P/E) --------
+# Réplica de las tablas 'Lead Time Proveedor' y 'Lead Time Proveedor Sucursal':
+# por proveedor (y proveedor+sucursal) se toman los días OC->P/E de las OCs
+# válidas, se descarta la cola con un percentil de corte (0.7 si predominan las
+# OCs nacionales de reposición, 0.8 si no) y se promedian las que caen bajo el corte.
+LT_TOPE_DIAS = 30             # nacionales/frontera: solo OCs con LT < 30 (importado sin tope)
+LT_PCTIL_NAC = 0.7           # percentil de corte cuando nNac > nOtros
+LT_PCTIL_OTROS = 0.8         # percentil de corte en caso contrario
+ORIGEN_NACIONAL = "Curifor Nacional"
+ORIGEN_IMPORTADO = "Curifor Importado"
+SUCURSAL_DESCONOCIDA = "DESCONOCIDO"
+
 # LT CD -> sucursal: por región (RM=1 día, resto=2), con casos especiales fijos.
 LT_CD_RM = 1
 LT_CD_RESTO = 2

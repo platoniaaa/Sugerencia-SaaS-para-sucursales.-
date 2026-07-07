@@ -58,6 +58,7 @@ export. Regenerar fixtures: `python -m tests_motor.regenerar_fixtures`.
 ## Estado
 
 - ✅ Las 5 etapas + pipeline + export con paridad 100% y tests de regresión.
-- ⏳ Conectar fuentes crudas reales (ver `FUENTES_REALES.md`): la brecha principal es
-  calcular el lead time desde el seguimiento (hoy se consume la tabla derivada del
-  modelo). Graph/SharePoint quedó diferido al final.
+- ✅ Lead time calculado desde el seguimiento (`lead_time_proveedor.py`, paridad 100%):
+  ya NO se depende de las tablas derivadas del modelo. Catálogo + costo conectados.
+- ⏳ Conectar fuentes crudas reales (ver `FUENTES_REALES.md`): SQL de Flexline
+  (`conectores/sql_flexline.py`, listo para credenciales) y SharePoint (Graph, al final).
