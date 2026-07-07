@@ -70,6 +70,8 @@ def main() -> None:
     fp(pl.read_csv(D / "stock_bodegas.csv", schema_overrides=S)).write_csv(OUT / "stock_bodegas.csv")
     fp(pl.read_csv(D / "stock_frontera.csv", schema_overrides=S)).write_csv(OUT / "stock_frontera.csv")
     fp(importados).write_csv(OUT / "importados.csv")
+    fp(pl.read_csv(D / "dim_producto_catalogo.csv", schema_overrides=S)).write_csv(OUT / "dim_producto_catalogo.csv")
+    fp(pl.read_csv(D / "stock_costo.csv", infer_schema_length=0)).write_csv(OUT / "stock_costo.csv")
     pl.read_csv(D / "lt_proveedor.csv").write_csv(OUT / "lt_proveedor.csv")
     pl.read_csv(D / "lt_proveedor_sucursal.csv", schema_overrides=S).write_csv(OUT / "lt_proveedor_sucursal.csv")
     pl.read_csv(D / "dim_sucursal.csv", schema_overrides=S).write_csv(OUT / "dim_sucursal.csv")

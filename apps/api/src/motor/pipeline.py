@@ -11,13 +11,14 @@ Uso típico (con los CSV de paridad como fuentes):
     df = pipeline.ejecutar(f, fin_mes_cerrado=date(2026, 7, 1), hoy=date(2026, 7, 6))
     pipeline.exportar_csv(df, "sugerido_motor.csv")
 
-Columnas que HOY salen vacías (la fuente aún no está conectada; ver notas):
-- Descripcion, FILTRO1_Final, Unidad de Medida: vienen del catálogo maestro
-  (Dim Producto trae solo Categoria en data/paridad). Conectar Listado Maestro.
-- Costo Unitario y total_valor_sugerido_clp: requieren la columna Costo de
-  Stock Bodegas (no extraída aún).
-- Tiene Stock CD: el modelo lo saca de 'Stock Unificado'; aquí se APROXIMA con
-  Stock Bodegas + Frontera en CD > 0 (validar cuando haya extracción).
+Columnas del catálogo/costo (Descripcion, FILTRO1_Final, Unidad de Medida,
+Costo Unitario, total_valor_sugerido_clp): se llenan si están las fuentes
+`dim_producto_catalogo.csv` (Dim Producto) y `stock_costo.csv` (Stock Bodegas
+[Costo]); si faltan, esas columnas salen vacías. Costo Unitario = MAX(VALUE(Costo))
+del grupo de reemplazos; Valor CLP = Sugerido × Costo.
+
+Nota: `Tiene Stock CD` el modelo lo saca de 'Stock Unificado'; aquí se APROXIMA
+con Stock Bodegas + Frontera en CD > 0 (coincide 100% en la corroboración).
 """
 from __future__ import annotations
 
@@ -53,7 +54,7 @@ def cargar_fuentes(directorio: str | Path) -> dict[str, pl.DataFrame]:
     def _csv(nombre: str, **kw) -> pl.DataFrame:
         return pl.read_csv(d / nombre, schema_overrides=_S, **kw)
 
-    return {
+    fuentes = {
         "ventas": _csv("ventas_12m.csv", try_parse_dates=True),
         "mapeo": pl.read_csv(d / "mapeo_master.csv"),
         "dim_producto": _csv("dim_producto.csv"),
@@ -66,6 +67,16 @@ def cargar_fuentes(directorio: str | Path) -> dict[str, pl.DataFrame]:
         "stock": _csv("stock_bodegas.csv"),
         "stock_frontera": _csv("stock_frontera.csv"),
     }
+    # Catálogo (Descripcion/Marca/Unidad) y costo son opcionales: si no están,
+    # esas columnas del contrato salen vacías (como antes de conectarlos).
+    cat = d / "dim_producto_catalogo.csv"
+    if cat.exists():
+        fuentes["catalogo"] = _csv("dim_producto_catalogo.csv")
+    costo = d / "stock_costo.csv"
+    if costo.exists():
+        # Costo llega como texto (trae placeholders " -"); se castea con VALUE al usarlo.
+        fuentes["costo"] = pl.read_csv(costo, infer_schema_length=0)
+    return fuentes
 
 
 def _empresa(ventas_limpias: pl.DataFrame) -> pl.DataFrame:
@@ -197,6 +208,38 @@ def ejecutar(
         pl.col("producto_master").is_in(con_stock_cd).alias("tiene_stock_cd"),
         pl.when(pl.col("es_importado")).then(pl.lit("Importado")).otherwise(pl.lit("Nacional")).alias("tipo_origen"),
     )
+
+    # --- Catálogo: Descripcion, Marca (FILTRO1_Final), Unidad (LOOKUPVALUE por master) ---
+    if "catalogo" in fuentes:
+        cat = fuentes["catalogo"].unique(subset=["Producto"], keep="first").rename({
+            "Descripcion": "descripcion_cat", "FILTRO1_Final": "filtro1_cat", "UnidadMedida": "unidad_cat",
+        })
+        r = r.join(cat, left_on="producto_master", right_on="Producto", how="left")
+    else:
+        r = r.with_columns(
+            pl.lit(None, dtype=pl.Utf8).alias("descripcion_cat"),
+            pl.lit(None, dtype=pl.Utf8).alias("filtro1_cat"),
+            pl.lit(None, dtype=pl.Utf8).alias("unidad_cat"),
+        )
+
+    # --- Costo Unitario: MAX(VALUE(Costo)) del grupo en Stock Bodegas (como el modelo) ---
+    if "costo" in fuentes:
+        costo = (
+            fuentes["costo"].with_columns(pl.col("Costo").cast(pl.Float64, strict=False))
+            .filter(pl.col("Costo").is_not_null())
+            .group_by("Producto").agg(pl.col("Costo").max().alias("costo_unitario"))
+        )
+        r = r.join(costo, left_on="producto_master", right_on="Producto", how="left")
+    else:
+        r = r.with_columns(pl.lit(None, dtype=pl.Float64).alias("costo_unitario"))
+
+    # Valor Sugerido CLP = Sugerido * Costo (solo si sugerido>0 y hay costo).
+    r = r.with_columns(
+        pl.when((pl.col("sugerido") > 0) & pl.col("costo_unitario").is_not_null())
+        .then(pl.col("sugerido") * pl.col("costo_unitario"))
+        .otherwise(None)
+        .alias("valor_clp")
+    )
     return r
 
 
@@ -204,7 +247,7 @@ def ejecutar(
 # Nombres idénticos a los que produce la extracción DAX de la plataforma.
 _CONTRATO: list[tuple[str, str]] = [
     ("Producto", "producto_master"),
-    ("Descripcion", "_null"),
+    ("Descripcion", "descripcion_cat"),
     ("SucursalID", "sucursal_final"),
     ("Nombre Sucursal", "nombre_sucursal"),
     ("Meses con Venta 3m", "m3"),
@@ -223,11 +266,11 @@ _CONTRATO: list[tuple[str, str]] = [
     ("Desv Std Mensual", "desv_std_mensual"),
     ("Demanda Diaria", "demanda_diaria"),
     ("Stock de Seguridad", "stock_seguridad"),
-    ("Costo Unitario", "_null"),
+    ("Costo Unitario", "costo_unitario"),
     ("Es Importado", "es_importado"),
     ("Tiene Stock CD", "tiene_stock_cd"),
-    ("FILTRO1_Final", "_null"),
-    ("Unidad de Medida", "_null"),
+    ("FILTRO1_Final", "filtro1_cat"),
+    ("Unidad de Medida", "unidad_cat"),
     ("Sucursales Origen CD", "sucursales_origen_cd"),
     ("Reemplazos", "reemplazos"),
     ("Empresa", "empresa"),
@@ -236,7 +279,7 @@ _CONTRATO: list[tuple[str, str]] = [
     ("Punto de Pedido", "punto_pedido"),
     # Medidas (alias snake_case idénticos a powerbi_dax_query de la plataforma).
     ("total_sugerido_suc", "sugerido"),
-    ("total_valor_sugerido_clp", "_null"),
+    ("total_valor_sugerido_clp", "valor_clp"),
     ("sugerido_suc", "sugerido"),
     ("stock_activo_suc", "stock_activo"),
     ("stock_en_transito_suc", "stock_transito"),

@@ -48,11 +48,12 @@ hubiera cambiado, no cuadraría).
    es idéntica; se resuelve alimentándolo con la historia completa (la fuente real la
    tiene). ABC y demanda no se ven afectados: ventanas ≤12m que el motor filtra solo.
 
-3. **5 columnas de metadata/valor vacías (brechas conocidas).** El motor las deja en
-   blanco porque su fuente cruda aún no está conectada (ver `FUENTES_REALES.md`):
-   - `Descripcion`, `FILTRO1_Final` (marca), `Unidad de Medida` → catálogo maestro.
-   - `Costo Unitario` y `total_valor_sugerido_clp` → columna Costo de Stock Bodegas.
-   No afectan el sugerido en unidades; sí el KPI de valor en CLP.
+3. ~~5 columnas de metadata/valor vacías~~ **RESUELTO (07-jul-2026):** se conectaron
+   el catálogo (`dim_producto_catalogo.csv`: Descripcion, FILTRO1_Final, Unidad) y el
+   costo (`stock_costo.csv`: Stock Bodegas[Costo]). Ahora `Descripcion`, `FILTRO1_Final`,
+   `Unidad de Medida`, `Costo Unitario` y `total_valor_sugerido_clp` **coinciden 100% a
+   nivel de valor** con el Power BI. Costo Unitario = MAX(VALUE(Costo)) del grupo;
+   Valor CLP = Sugerido × Costo.
 
 ## Checklist para cortar la dependencia del Power BI
 
@@ -60,12 +61,14 @@ Ninguno es un error del motor; son de conexión de datos:
 
 1. **Alimentar el motor con la historia completa de ventas** (no solo 12m) → cierra
    Empresa. Trivial una vez conectada la fuente real.
-2. **Conectar catálogo maestro + columna Costo** → llena las 5 columnas de metadata/valor.
+2. ~~Conectar catálogo maestro + columna Costo~~ **HECHO (07-jul-2026):** las 5 columnas
+   de metadata/valor coinciden 100%.
 3. **(Opcional) Emitir null en vez de 0** en meses/stock activo/tránsito para un CSV
    byte-idéntico al del Power BI.
 4. **Etapa lead-time-desde-seguimiento** (ver `FUENTES_REALES.md`): hoy el motor
    consume la tabla de lead time que deriva el modelo; para independencia total hay
    que calcularla desde el seguimiento.
 
-Con (1) y (2) resueltos, el motor produce el mismo CSV que hoy entrega el Power BI,
-y la plataforma puede alimentarse de él sin cambios (mismo contrato de 53 columnas).
+Con (2) ya hecho, el motor produce el mismo CSV que hoy entrega el Power BI (53
+columnas, todas coincidiendo salvo el cosmético BLANK-vs-0 y Empresa que necesita
+historia completa). La plataforma puede alimentarse de él sin cambios.

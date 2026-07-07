@@ -154,6 +154,20 @@ def test_pipeline_contrato_columnas(fuentes):
     assert salida.height == df.height
 
 
+def test_catalogo_y_costo(fuentes):
+    """Con catálogo + costo conectados, las 5 columnas de metadata/valor se llenan
+    y el Valor CLP = Sugerido × Costo."""
+    df = pipeline.ejecutar(fuentes, fin_mes_cerrado=FIN, hoy=HOY)
+    sal = pipeline.contrato(df)
+    # Descripcion y Unidad vienen para (casi) todo producto del catálogo.
+    assert sal.filter(pl.col("Descripcion").is_not_null()).height > 0
+    assert sal.filter(pl.col("Unidad de Medida").is_not_null()).height > 0
+    # Valor CLP = Sugerido × Costo donde hay ambos.
+    chk = df.filter((pl.col("sugerido") > 0) & pl.col("costo_unitario").is_not_null())
+    mal = chk.filter((pl.col("valor_clp") - pl.col("sugerido") * pl.col("costo_unitario")).abs() > 0.5)
+    assert mal.height == 0, f"Valor CLP != Sugerido*Costo en {mal.height} filas"
+
+
 def test_pipeline_export_roundtrip(fuentes, tmp_path):
     df = pipeline.ejecutar(fuentes, fin_mes_cerrado=FIN, hoy=HOY)
     ruta = pipeline.exportar_csv(df, tmp_path / "sugerido_motor.csv")
