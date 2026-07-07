@@ -1,0 +1,54 @@
+SucursalID,Nombre,Region,Tipo,EsOperativa,CodigoLocal
+LA FLORIDA,La Florida,RM,Comercial,true,SUC010
+CHILLAN,Chillán,Nuble,Comercial,true,SUC020
+CHILLAN VIEJO,Chillán Viejo,Nuble,Comercial,true,SUC030
+COQUIMBO,Coquimbo,Coquimbo,Comercial,true,SUC040
+CURICO,Curicó,Maule,Comercial,true,SUC050
+DIEZ DE JULIO,Diez de Julio,RM,Comercial,true,SUC060
+LINDEROS,Linderos,RM,Comercial,true,SUC070
+LIRA,Lira,RM,Comercial,true,SUC080
+OVALLE MALL,Ovalle Mall,Coquimbo,Comercial,true,SUC090
+OVALLE 2,Ovalle (2),Coquimbo,Comercial,true,SUC100
+LO BLANCO,Lo Blanco,RM,Comercial,true,SUC110
+PLACILLA,Placilla,OHiggins,Comercial,true,SUC120
+RANCAGUA,Rancagua,OHiggins,Comercial,true,SUC130
+SAN FERNANDO,San Fernando,OHiggins,Comercial,true,SUC140
+TALCA,Talca,Maule,Comercial,true,SUC150
+TALCA 2,Talca (2),Maule,Comercial,true,SUC160
+AUTOSHOPPING,Autoshopping,RM,Comercial,true,SUC170
+WEB,Web,RM,Comercial,true,SUC180
+RANCAGUA USADOS,Rancagua Usados,OHiggins,Comercial,true,SUC190
+CASA MATRIZ,Casa Matriz,RM,CD,true,SUC200
+OVALLE 3,Ovalle (3),Coquimbo,Comercial,true,SUC210
+CORONEL,Coronel,BioBio,Comercial,true,SUC220
+MALL PLAZA NORTE,Mall Plaza Norte,RM,Comercial,true,SUC230
+BRASIL 18,Brasil 18,RM,Comercial,true,SUC250
+CONCEPCION,Concepción,BioBio,Comercial,true,SUC260
+GRAN AVENIDA,Gran Avenida,RM,Comercial,true,SUC270
+CD REPUESTOS,Centro Distribución Repuestos,RM,CD,true,SUC280
+LA SERENA,La Serena,Coquimbo,Comercial,true,SUC290
+MAIPU,Maipú,RM,Comercial,true,SUC300
+RANCAGUA 2,Rancagua 2,OHiggins,Comercial,true,SUC310
+TALCA 3,Talca 3,Maule,Comercial,true,SUC320
+MALL PLAZA VESPUCIO,Mall Plaza Vespucio,RM,Comercial,true,SUC330
+MALL PLAZA NORTE 2,Mall Plaza Norte 2,RM,Comercial,true,SUC340
+MALL PLAZA SUR,Mall Plaza Sur,RM,Comercial,true,SUC350
+OFICINAS CENTRALES,Oficinas Centrales,RM,CD,true,SUC360
+VICUNA MACKENNA,Vicuña Mackenna,RM,Comercial,true,SUC370
+AUTOPARK,Autopark,RM,Comercial,true,SUC380
+FLOTA,Flota,RM,Comercial,true,SUC390
+CURICO 2,Curicó 2,Maule,Comercial,true,SUC400
+MALL PLAZA EGANA,Mall Plaza Eñaga,RM,Comercial,true,SUC420
+CANAL DIGITAL,Canal Digital,RM,Comercial,true,SUC430
+OVALLE,Ovalle,Coquimbo,Comercial,true,
+BODEGA DANADOS,Bodega Dañados,,Virtual,false,
+BODEGA DEVOLUCION,Bodega Devolución,,Virtual,false,
+BODEGA ML,Bodega Mercado Libre,,Virtual,false,
+BODEGA SCRAP,Bodega Scrap,,Virtual,false,
+BODEGA IMPORTACION,Bodega Importación,,Virtual,false,
+COMEX,Comex,,Virtual,false,
+IMPORTACION MOTOS,Importación Motos,,Virtual,false,
+PE X REGULARIZAR,PE por Regularizar,,Virtual,false,
+PE FALTANTE,PE Faltante,,Virtual,false,
+TRANSITO,Tránsito,,Virtual,false,
+DESCONOCIDO,Sin Asignar,,Revisar,false,
