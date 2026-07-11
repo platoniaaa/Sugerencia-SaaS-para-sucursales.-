@@ -1,6 +1,8 @@
 """Proveedor, lead time y abastecimiento CD (réplica del modelo DAX).
 
 - Proveedor: razón social de la OC más reciente (por producto × sucursal).
+  Si no hay reposición confirmada en la sucursal, se rellena con ProveedorLT
+  (cambio jul-2026, espejo del COALESCE del DAX).
 - ProveedorLT: mínimo alfabético de razón social en el seguimiento filtrado por
   motivo, con jerarquía suc → global → (sin filtro de motivo).
 - Lead Time Dias: LT del par (proveedor, sucursal) si hay muestra, si no el LT
@@ -81,6 +83,12 @@ def calcular_lead_time(
     r = abc.select([*local, "clasificacion_abc", "clasificacion_abc_agregada"])
     r = r.join(_proveedor_lt(abc, seguimiento), on=local, how="left")
     r = r.join(_proveedor_oc_reciente(abc, seguimiento), on=local, how="left")
+
+    # El proveedor mostrado rellena los blancos (par sin reposición confirmada en
+    # la sucursal) con el proveedor deducido global. Espejo del cambio jul-2026 del
+    # DAX: "Proveedor" = COALESCE([Proveedor], [ProveedorLT]). Válido porque el
+    # código es 1:1 con el proveedor (si cambia el proveedor, cambia el código).
+    r = r.with_columns(pl.coalesce("proveedor", "proveedor_lt").alias("proveedor"))
 
     # LT por (proveedor, sucursal) con muestra, y global por proveedor.
     lts = lt_prov_suc.filter(pl.col("N Muestras") >= 1).group_by(

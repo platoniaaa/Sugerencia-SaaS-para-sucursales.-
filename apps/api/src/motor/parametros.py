@@ -76,8 +76,13 @@ def ventana_demanda_meses(clase: str) -> int:
 
 # --- Demanda / winsorización ----------------------------------------------------
 
-# Tope de winsorización: mediana + K * 1.4826 * MAD (K=1 en el modelo actual).
-WINSOR_K = 1.0
+# Tope de winsorización: mediana + K * 1.4826 * MAD.
+# K=3 desde jul-2026 (antes 1). k=1 recortaba demasiado: en productos con venta
+# lumpy (picos legítimos ~1 de cada 3 meses) casi borraba los picos reales; k=3
+# solo tapa el extremo. Decisión de Abastecimiento, aplicada también en el DAX.
+# OJO PARIDAD: el golden snapshot se congeló con k=1 -> re-congelar contra el
+# modelo nuevo o los tests de demanda/safety-stock fallarán (esperado, no es bug).
+WINSOR_K = 3.0
 WINSOR_ESCALA_MAD = 1.4826
 
 # Días hábiles por mes: divisor de la demanda diaria (hardcodeado en el DAX).

@@ -1,8 +1,9 @@
 """Tests de regresión del motor: paridad exacta contra los goldens congelados.
 
-Los fixtures en `fixtures/` son un subconjunto de 110 productos master extraídos del
-modelo Power BI (jul-2026) que cubre todas las ramas del cálculo (cada clase ABC,
-centralización CD, importados, frontera, traslados, empates laterales, aceites mL).
+Los fixtures en `fixtures/` son un subconjunto de 107 productos master extraídos del
+modelo Power BI (snapshot 10-jul-2026, winsor k=3 + proveedor COALESCE) que cubre
+todas las ramas del cálculo (cada clase ABC, centralización CD, importados, frontera,
+traslados, empates laterales, aceites mL).
 Cada cálculo del motor es por producto, así que el subconjunto conserva la paridad.
 
 Si algún cambio futuro al motor rompe la paridad, estos tests fallan señalando la
@@ -26,7 +27,7 @@ from src.motor import (
 
 FIXT = Path(__file__).parent / "fixtures"
 FIN = date(2026, 7, 1)
-HOY = date(2026, 7, 6)
+HOY = date(2026, 7, 10)
 S = {"Producto": pl.Utf8, "SucursalID": pl.Utf8}
 CLAVE = ["Producto", "SucursalID"]
 

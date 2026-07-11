@@ -1,5 +1,16 @@
 # Corroboración del motor contra el Power BI (07-jul-2026)
 
+> **Re-corroboración y re-freeze (10-jul-2026, winsor k=3 + proveedor COALESCE).**
+> Tras cambiar el escalar del winsorizado de k=1 a **k=3** (`parametros.WINSOR_K`) y
+> agregar el `COALESCE([Proveedor],[ProveedorLT])` en `lead_time.py`, se re-extrajo el
+> snapshot **completo y consistente** del modelo (14 insumos + 5 goldens + salida de 53
+> columnas, `data/paridad/`) y se volvió a correr la comparación etapa por etapa sobre
+> las **18.948 filas**. Resultado: **paridad 100%, 0 mismatches** en ABC, demanda/desv
+> (winsor k=3), proveedor (COALESCE), lead time, stock de seguridad, sugerido, necesidad,
+> punto de pedido, tránsito, traslados, compra neta, comprar-en-CD y lateral. Fixtures
+> re-congelados (`tests_motor/fixtures/`, 107 masters) y `pytest test_paridad_motor` verde.
+> Snapshot: FIN=2026-07-01 (jun último mes cerrado), HOY=2026-07-10.
+
 Verificación independiente y exhaustiva antes de decidir el corte del Power BI.
 Método: se extrajo el output **fresco y completo** de `'Sugerido por Sucursal'`
 (las 53 columnas: todas las columnas + las 11 medidas) del Power BI abierto, y se
