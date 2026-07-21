@@ -7,11 +7,16 @@ Cada entrada del motor y de dónde sale su crudo real (ver FUENTES_REALES.md):
 |----------------------------|------------------------------------------|--------|
 | stock / stock_frontera     | Stock bodegas[ frontera].xlsx (Excel)    | ✅ `leer_stock` |
 | costo                      | mismo Excel de stock (columna Costo)     | ✅ `leer_stock` |
-| seguimiento / _lt / _transito | SQL Flexline (`conectores.sql_flexline`) | ⏳ conector listo, faltan credenciales |
-| ventas                     | SQL Flexline (Curifor E01 + Frontera E07) | ⏳ conector (falta query E07 + histórico) |
+| seguimiento / _lt / _transito | Excel de SharePoint (nacional/importado/frontera) | ✅ `lectores_excel` |
+| ventas                     | respaldos anuales de SharePoint (Excel)  | ✅ `lectores_excel` |
 | mapeo_master               | 'mix andres' (BASE NUEVO MIX.xlsx) → DAX complejo | ⏳ snapshot o replicar |
 | dim_producto               | tabla calculada del modelo (ventas+stock+catálogo) | ⏳ snapshot o replicar |
 | dim_sucursal / importados  | tablas chicas y estables                 | ⏳ snapshot |
+
+El SQL de Flexline (`conectores/sql_flexline.py`) queda como camino alternativo: sus
+transformaciones se siguen usando (son las reglas del modelo), pero las fuentes de
+alta frecuencia entran por Excel, que es lo que el usuario puede publicar a diario
+en SharePoint sin depender de credenciales del ERP ni de estar en la LAN.
 
 Las tablas chicas y estables (mapeo, dim_producto, dim_sucursal, importados) se
 pueden **snapshotear** (leer de un CSV congelado que se regenera de vez en cuando)
@@ -93,24 +98,67 @@ def leer_stock(ruta_excel: str | Path) -> pl.DataFrame:
     ).select(["Producto", "SucursalID", pl.col("Stock").cast(pl.Float64, strict=False).cast(pl.Int64), "Costo"])
 
 
+def _seguimiento_desde_excel(
+    nacional_xlsx: str | Path | None,
+    importado_xlsx: str | Path | None,
+    frontera_xlsx: str | Path | None,
+) -> dict[str, pl.DataFrame]:
+    """Las tres vistas del seguimiento (base, transito y lead time) desde los Excel.
+
+    Cada archivo se lee UNA vez y se normaliza tres veces, porque las tres vistas
+    salen del mismo crudo con distintas columnas."""
+    from . import lectores_excel as lx
+    from .conectores import sql_flexline as sf
+
+    crudos: list[tuple[pl.DataFrame, callable]] = []
+    if nacional_xlsx is not None:
+        crudos.append((lx.leer_seguimiento_nacional_excel(nacional_xlsx), sf.normalizar_seguimiento))
+    if importado_xlsx is not None:
+        crudos.append(
+            (lx.leer_seguimiento_importado_excel(importado_xlsx), sf.normalizar_seguimiento_importado)
+        )
+    if frontera_xlsx is not None:
+        crudos.append(
+            (lx.leer_seguimiento_frontera_excel(frontera_xlsx), sf.normalizar_seguimiento_frontera)
+        )
+    if not crudos:
+        raise ValueError("Se pidio el seguimiento desde Excel pero no se paso ningun archivo")
+
+    def _union(**kwargs) -> pl.DataFrame:
+        return sf.unir_seguimiento(*[normalizar(crudo, **kwargs) for crudo, normalizar in crudos])
+
+    return {
+        "seguimiento": _union(),
+        "seguimiento_transito": _union(para_transito=True),
+        "seguimiento_lt": _union(para_lead_time=True),
+    }
+
+
 def cargar_fuentes_reales(
     *,
     stock_curifor_xlsx: str | Path,
     stock_frontera_xlsx: str | Path,
     snapshot_dir: str | Path,
+    seguimiento_nacional_xlsx: str | Path | None = None,
+    seguimiento_importado_xlsx: str | Path | None = None,
+    seguimiento_frontera_xlsx: str | Path | None = None,
+    ventas_xlsx: str | Path | list[str | Path] | None = None,
     sql_conn=None,
 ) -> dict[str, pl.DataFrame]:
     """Arma el dict `fuentes` para `pipeline.ejecutar` desde los crudos reales.
 
     - `stock_*_xlsx`: Excel de stock (Curifor y Frontera).
     - `snapshot_dir`: carpeta con los CSV congelados de las tablas chicas y estables
-      (mapeo_master, dim_producto, dim_sucursal, importados) + ventas.
-    - `sql_conn`: conexión abierta a Flexline (`conectores.sql_flexline.conectar()`).
-      Si es None, el seguimiento/ventas se leen del snapshot (modo offline).
+      (mapeo_master, dim_producto, dim_sucursal, importados).
+    - `seguimiento_*_xlsx` / `ventas_xlsx`: Excel de SharePoint. **Es el camino
+      principal**: con ellos el motor no necesita el SQL de Flexline ni la red de
+      Curifor. Las ventas aceptan varios archivos (respaldos por ano).
+    - `sql_conn`: conexión a Flexline (`conectores.sql_flexline.conectar()`), como
+      alternativa si algun dia se quiere leer en vivo desde la LAN.
 
-    Estado: implementado stock + snapshot de las estables. Ventas y seguimiento en
-    vivo dependen del conector SQL (credenciales) — hoy se toman del snapshot si no
-    hay conexión. Ver TODOs en FUENTES_REALES.md.
+    Para cada fuente se toma, en orden: el Excel si se paso, si no el SQL si hay
+    conexión, si no el snapshot congelado. Asi se puede migrar de a una fuente sin
+    quedarse a medias.
     """
     snap = Path(snapshot_dir)
     S = {"Producto": pl.Utf8, "SucursalID": pl.Utf8}
@@ -129,17 +177,42 @@ def cargar_fuentes_reales(
         "importados": pl.read_csv(snap / "importados.csv", schema_overrides=S),
     }
 
-    if sql_conn is not None:  # camino en vivo (dentro de la red de Curifor)
+    # --- Seguimiento de compras ---
+    hay_seguimiento_excel = any(
+        x is not None
+        for x in (seguimiento_nacional_xlsx, seguimiento_importado_xlsx, seguimiento_frontera_xlsx)
+    )
+    if hay_seguimiento_excel:
+        fuentes.update(
+            _seguimiento_desde_excel(
+                seguimiento_nacional_xlsx, seguimiento_importado_xlsx, seguimiento_frontera_xlsx
+            )
+        )
+    elif sql_conn is not None:
         from .conectores import sql_flexline
 
         fuentes["seguimiento"] = sql_flexline.leer_seguimiento(sql_conn, para_transito=False)
         fuentes["seguimiento_transito"] = sql_flexline.leer_seguimiento(sql_conn, para_transito=True)
-        fuentes["ventas"] = sql_flexline.leer_ventas_curifor(sql_conn)  # falta anexar Frontera + histórico
-        # seguimiento_lt: mismo seguimiento con Fecha P/E (extender el conector).
-    else:  # modo offline: snapshot
-        fuentes["seguimiento"] = pl.read_csv(snap / "seguimiento.csv", schema_overrides=S, try_parse_dates=True)
-        fuentes["seguimiento_transito"] = pl.read_csv(snap / "seguimiento_transito.csv", schema_overrides=S, try_parse_dates=True)
-        fuentes["seguimiento_lt"] = pl.read_csv(snap / "seguimiento_lt.csv", schema_overrides=S, try_parse_dates=True)
-        fuentes["ventas"] = pl.read_csv(snap / "ventas_12m.csv", schema_overrides=S, try_parse_dates=True)
+        fuentes["seguimiento_lt"] = sql_flexline.leer_seguimiento_lt(sql_conn)
+    else:
+        for nombre in ("seguimiento", "seguimiento_transito", "seguimiento_lt"):
+            fuentes[nombre] = pl.read_csv(
+                snap / f"{nombre}.csv", schema_overrides=S, try_parse_dates=True
+            )
+
+    # --- Ventas ---
+    if ventas_xlsx is not None:
+        from . import lectores_excel as lx
+        from .conectores import sql_flexline as sf
+
+        fuentes["ventas"] = sf.normalizar_ventas_curifor(lx.leer_ventas_excel(ventas_xlsx))
+    elif sql_conn is not None:
+        from .conectores import sql_flexline
+
+        fuentes["ventas"] = sql_flexline.leer_ventas_curifor(sql_conn)
+    else:
+        fuentes["ventas"] = pl.read_csv(
+            snap / "ventas_12m.csv", schema_overrides=S, try_parse_dates=True
+        )
 
     return fuentes

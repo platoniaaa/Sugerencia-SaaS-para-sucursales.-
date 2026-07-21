@@ -19,7 +19,7 @@ el motor consume hoy (headers de los CSV de paridad).
 
 | Entrada del motor | Columnas que usa | Fuente cruda real | Tipo |
 |---|---|---|---|
-| `ventas_12m` | Producto, SUCURSAL, TipoVenta, Fecha, CantidadAjustada, Fuente | **Curifor**: SQL `Tmp_ProdMensualPostVta` (E01, fecha≥2018) + histórico. **Frontera**: `Informe Gestión Producción REP ST GAR D&P`. En SharePoint `respaldoBBDD` como Excel anuales (`2018.xlsx`…). | SQL + Excel |
+| `ventas_12m` | Producto, SUCURSAL, TipoVenta, Fecha, CantidadAjustada, Fuente | Respaldos anuales de SharePoint `respaldoBBDD` (`2024.xlsx`, `2020 2023.xlsx`…) vía `lectores_excel.leer_ventas_excel` ✅. Alternativa: SQL `Tmp_ProdMensualPostVta` (E01) + `Informe Gestión…` (E07). | Excel |
 | `mapeo_master` | Producto, Producto_Master | Mix reemplazos `BASE NUEVO MIX 2026_1.xlsx` (Andrés) | Excel |
 | `dim_producto` | Producto, Categoria (+ **Descripcion, FILTRO1_Final, Unidad de Medida** para el contrato) | Catálogo `Listado Maestro Repuestos.xlsx` | Excel |
 | `dim_sucursal` | SucursalID, Nombre, Region, EsOperativa | Tabla de configuración (casi estática) | config/Excel |
@@ -109,11 +109,41 @@ Frontera-Excel; (4) un `SELECT TOP 10` real para confirmar dtypes de fecha/núme
    con Stock Bodegas+Frontera en CD > 0. Validar contra `Stock Unificado` real
    (o extraer esa tabla) cuando se conecten los crudos.
 
-4. **CantidadAjustada**: es columna calculada del modelo (las NC restan; ver
-   `REFERENCIA_MODELO.md`). Si las ventas llegan crudas del SQL/Excel, hay que
-   **replicar ese cálculo** antes de entrar al motor (hoy `ventas_12m.csv` ya lo
-   trae calculado). Regla conocida: `SUCURSAL_FINAL` y `Producto_Master` ya los
-   aplica el motor en `preparar_ventas`; falta solo el signo de las NC.
+4. ~~**CantidadAjustada**~~ **RESUELTO (21-jul-2026):** `sql_flexline.cantidad_ajustada_expr()`
+   aplica el signo de las NC y `lectores_excel.leer_ventas_excel()` entrega el crudo
+   con el vocabulario que ese filtro espera. Verificado contra el respaldo 2024 real:
+   155.847 líneas de repuestos, 2.954 de ellas notas de crédito en negativo.
+
+---
+
+## Lectores de Excel (21-jul-2026): el motor ya no necesita el SQL
+
+`lectores_excel.py` traduce los reportes de Flexline exportados a Excel al esquema
+crudo que ya consumen las funciones de `sql_flexline`. Verificado contra los archivos
+reales del 20-jul-2026. Tres cosas que estos archivos tienen y hay que respetar:
+
+1. **La fila de encabezados no está fija**: el importado arranca en la fila 9, el de
+   Frontera en la 8, las ventas en la 0 (arriba viene el título del informe y los
+   filtros). El lector la **detecta** buscando las columnas obligatorias; hardcodear
+   el número se rompe al primer cambio de plantilla. La columna A viene vacía.
+2. **El respaldo de ventas usa otro vocabulario que el SQL**: `tipoproducto` llega
+   como `4Repuesto` (no `REPUESTOS`) y `SUCURSAL` con prefijo de informe (`08 TALCA`,
+   no `TALCA`). Sin traducir esos dos valores el filtro de repuestos **no matchea
+   nada y las ventas salen vacías** — pasó en la primera corrida contra el archivo
+   real. Des-prefijar la sucursal deja 20 de 25 valores idénticos al golden; los
+   otros 5 son locales que existen en un año y no en el otro.
+3. **Las fechas de los seguimientos son texto `dd/mm/aaaa`**; las de ventas, datetime.
+
+Cobertura: `tests_motor/test_lectores_excel.py` (11 tests) fabrica Excel con esas
+mismas particularidades — no dependen de los archivos privados.
+
+**Falta para cerrar la ingesta completa:**
+- El Excel del **seguimiento nacional** (el de mayor volumen; hoy sale del SQL). El
+  lector ya está escrito (`leer_seguimiento_nacional_excel`) y probado con datos
+  sintéticos, pero no contra el archivo real.
+- Los **respaldos de ventas 2025 y 2026**: los disponibles (2024, 2020-2023) no
+  cubren el período del golden (2025-07 → 2026-06), así que la reconstrucción de
+  `ventas_12m` todavía no se pudo comparar 1:1 contra el modelo.
 
 ---
 
