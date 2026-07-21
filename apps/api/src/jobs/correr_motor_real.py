@@ -43,7 +43,7 @@ def _buscar(patrones: list[str], obligatorio: bool = True) -> Path | None:
     from ..motor import fuentes
 
     candidatos = [
-        p for p in CRUDOS_DIR.iterdir()
+        p for p in CRUDOS_DIR.rglob("*")  # recursivo: la carpeta puede tener subcarpetas
         if p.is_file()
         and p.suffix.lower() in (".xlsx", ".xlsm", ".csv")
         and not p.name.startswith("~$")
@@ -59,16 +59,31 @@ def _buscar(patrones: list[str], obligatorio: bool = True) -> Path | None:
     return sorted(candidatos, key=lambda p: p.stat().st_mtime, reverse=True)[0]
 
 
+def _archivos_de_ventas(fin_mes_cerrado: date) -> list[Path]:
+    """Respaldos de venta que cubren la ventana de 12 meses que usa el motor.
+
+    Los respaldos vienen por ano y el historico completo pesa cientos de MB, pero
+    el sugerido solo mira los 12 meses cerrados: para jul-2026 alcanzan 2026 y
+    2025. Cargar 2018-2024 ademas seria minutos de lectura para nada.
+    """
+    anios = {str(fin_mes_cerrado.year), str(fin_mes_cerrado.year - 1)}
+    if not CRUDOS_DIR.exists():
+        return []
+    return sorted(
+        p for p in CRUDOS_DIR.rglob("*.xlsx")
+        if not p.name.startswith("~$")
+        and "stock" not in p.name.lower()
+        and "seguimiento" not in p.name.lower()
+        and any(a in p.name for a in anios)
+    )
+
+
 def construir_csv(hoy: date | None = None) -> Path:
     """Corre el pipeline completo con los crudos reales y escribe el CSV contrato."""
     from ..motor import fuentes_reales, pipeline
 
     hoy = hoy or date.today()
-    ventas = [
-        p for p in CRUDOS_DIR.glob("*.xlsx")
-        if not p.name.startswith("~$") and any(c.isdigit() for c in p.name)
-        and "stock" not in p.name.lower() and "seguimiento" not in p.name.lower()
-    ]
+    ventas = _archivos_de_ventas(_fin_mes_cerrado(hoy))
     fuentes = fuentes_reales.cargar_fuentes_reales(
         stock_curifor_xlsx=_buscar(["*stock*bodega*", "*stock*curifor*"]),
         stock_frontera_xlsx=_buscar(["*stock*frontera*"]),

@@ -79,8 +79,10 @@ def _candidatos(fuente: str) -> list[pathlib.Path]:
     if not CRUDOS_DIR.exists():
         return []
     spec = FUENTES[fuente]
+    # Recursivo: asi la carpeta puede estar organizada en subcarpetas (Ventas/,
+    # stock/, Seguimientos de compras/...) en vez de un monton de archivos sueltos.
     archivos = [
-        p for p in CRUDOS_DIR.iterdir()
+        p for p in CRUDOS_DIR.rglob("*")
         if p.is_file() and p.suffix.lower() in _EXT and not p.name.startswith("~$")
     ]
     matches = [p for p in archivos if _matchea(p.name, spec)]
@@ -157,7 +159,7 @@ def inventariar() -> str:
         if len(candidatos) > 1:
             lineas.append(f"        + {len(candidatos)-1} archivo(s) más se concatenan")
     presentes = {
-        p.name for p in CRUDOS_DIR.iterdir()
+        p.name for p in CRUDOS_DIR.rglob("*")
         if p.is_file() and p.suffix.lower() in _EXT and not p.name.startswith("~$")
     }
     huerfanos = presentes - asignados
