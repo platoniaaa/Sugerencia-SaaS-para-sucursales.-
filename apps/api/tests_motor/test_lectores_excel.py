@@ -314,3 +314,24 @@ def test_ventas_usa_tipoproducto_y_no_la_columna_tipo_producto(tmp_path):
     # El aceite es repuesto y entra; la mano de obra no.
     out = F.normalizar_ventas_curifor(crudo)
     assert out["Producto"].to_list() == ["70 ACEITE"]
+
+
+def test_los_codigos_con_espacio_al_final_no_crean_un_producto_aparte(tmp_path):
+    """Los reportes traen codigos con relleno ("15 MXD1454M "). DAX compara texto
+    ignorando el espacio final, asi que el modelo los ve como UN producto; polars
+    no. Sin recortar salian filas duplicadas por producto-sucursal y esas copias no
+    encontraban catalogo ni costo: 66 filas sin Descripcion ni Unidad de Medida."""
+    ruta = _crear_excel(
+        tmp_path / "2026.xlsx",
+        _ENCABEZADOS_VENTAS,
+        [
+            ["E01", "202601", "FACTURA S/T", "2026-01-09 00:00:00", "VTA MESON",
+             "15 MXD1454M", 3, "REPUESTOS", "08 TALCA"],
+            ["E01", "202601", "FACTURA S/T", "2026-01-10 00:00:00", "VTA MESON",
+             "15 MXD1454M ", 2, "REPUESTOS", "08 TALCA "],
+        ],
+        col_a_vacia=False,
+    )
+    crudo = lx.leer_ventas_excel(ruta)
+    assert crudo["Producto"].unique().to_list() == ["15 MXD1454M"]
+    assert crudo["SUCURSAL"].unique().to_list() == ["TALCA"]

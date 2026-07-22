@@ -134,9 +134,15 @@ def leer_reporte(
     # Todo a texto: openpyxl mezcla int/str/datetime en una misma columna segun la
     # celda, y polars no puede inferir un tipo para eso. El casteo lo hace cada
     # lector segun lo que la columna significa.
+    #
+    # Con `.strip()`: los reportes traen codigos con espacios al final ("15 MXD1454M ")
+    # y en el modelo eso NO crea un producto aparte -DAX compara texto ignorando el
+    # relleno final-, pero en polars si. Sin recortar salian filas duplicadas por
+    # producto-sucursal y esas copias no encontraban catalogo ni costo: 66 filas
+    # sin Descripcion, Unidad de Medida ni FILTRO1_Final.
     return pl.DataFrame(
         {
-            destino: [None if v is None else (v.isoformat() if isinstance(v, (dt.datetime, dt.date)) else str(v))
+            destino: [None if v is None else (v.isoformat() if isinstance(v, (dt.datetime, dt.date)) else str(v).strip())
                       for v in valores]
             for destino, valores in datos.items()
         },
