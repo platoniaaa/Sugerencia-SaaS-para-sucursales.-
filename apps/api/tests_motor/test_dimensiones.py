@@ -136,3 +136,23 @@ def test_mapeo_elige_como_master_al_que_mas_vendio_en_6_meses():
 def test_importados_son_los_del_seguimiento_importado():
     seg = pl.DataFrame({"Producto": ["P1", "P1", "P2", None]})
     assert dim.calcular_importados(seg)["Producto"].to_list() == ["P1", "P2"]
+
+
+def test_frescura_marca_los_archivos_viejos(tmp_path, monkeypatch):
+    """Olvidar una exportacion no da ningun error: el motor calcula igual y publica
+    un sugerido con el stock de la semana pasada. Este chequeo es el que avisa."""
+    from src.jobs import correr_motor_real as job
+    from src.motor import fuentes
+
+    viejo = tmp_path / "Stock bodegas.xlsx"
+    viejo.write_bytes(b"x")
+    import os, time
+    hace_10_dias = time.time() - 10 * 86400
+    os.utime(viejo, (hace_10_dias, hace_10_dias))
+
+    monkeypatch.setattr(
+        fuentes, "ruta_de",
+        lambda f: viejo if f == "stock_bodegas" else (_ for _ in ()).throw(FileNotFoundError()),
+    )
+    avisos = job.revisar_frescura(date(2026, 7, 22))
+    assert len(avisos) == 1 and "Stock bodegas.xlsx" in avisos[0] and "10 dias" in avisos[0]

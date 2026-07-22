@@ -143,8 +143,57 @@ def enviar(csv_path: Path, oficial: bool = False) -> dict:
         return r.json()
 
 
-def run(oficial: bool = False) -> int:
+# Cuántos días puede tener un archivo antes de que su dato deje de servir. El
+# stock y el seguimiento cambian todos los días; los respaldos de venta son
+# mensuales y el maestro/mix cambian pocas veces al año.
+FRESCURA_DIAS = {
+    "stock_bodegas": 2,
+    "stock_bodegas_frontera": 2,
+    "seguimiento_curifor_nacional": 2,
+    "seguimiento_curifor_importado": 7,
+    "seguimiento_frontera": 7,
+    "ventas_frontera": 35,
+    "catalogo": 120,
+    "mix_reemplazos": 120,
+}
+
+
+def revisar_frescura(hoy: date | None = None) -> list[str]:
+    """Archivos que llevan demasiado sin actualizarse.
+
+    Sin esto, olvidar una exportación no da ningún error: el motor calcula igual y
+    publica un sugerido con el stock de la semana pasada. Nadie se entera hasta que
+    alguien compra de más."""
+    from ..motor import fuentes
+
+    hoy = hoy or date.today()
+    viejos = []
+    for fuente, dias in FRESCURA_DIAS.items():
+        try:
+            ruta = fuentes.ruta_de(fuente)
+        except FileNotFoundError:
+            continue
+        edad = (hoy - date.fromtimestamp(ruta.stat().st_mtime)).days
+        if edad > dias:
+            viejos.append(f"{ruta.name}: {edad} dias (se espera al dia cada {dias})")
+    return viejos
+
+
+def run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
     print(f"Crudos: {CRUDOS_DIR}")
+
+    viejos = revisar_frescura()
+    for v in viejos:
+        print(f"  DESACTUALIZADO: {v}")
+    if viejos and oficial and not ignorar_frescura:
+        print(
+            "\nERROR: no se carga a produccion con archivos desactualizados.\n"
+            "Actualizalos en la carpeta de datos, o usa --ignorar-frescura si "
+            "sabes que asi corresponde.",
+            file=sys.stderr,
+        )
+        return 1
+
     try:
         csv_path = construir_csv()
     except FileNotFoundError as e:
@@ -184,5 +233,10 @@ if __name__ == "__main__":
         action="store_true",
         help="Carga el resultado como sugerido oficial (por defecto solo compara).",
     )
+    ap.add_argument(
+        "--ignorar-frescura",
+        action="store_true",
+        help="Carga aunque haya archivos desactualizados (solo si sabes por que).",
+    )
     args = ap.parse_args()
-    raise SystemExit(run(oficial=args.oficial))
+    raise SystemExit(run(oficial=args.oficial, ignorar_frescura=args.ignorar_frescura))
