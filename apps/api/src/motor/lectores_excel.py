@@ -144,7 +144,12 @@ def _a_entero(col: str) -> pl.Expr:
 # `sql_flexline.normalizar_seguimiento*` (mismo esquema que trae el SQL).
 COLUMNAS_SEGUIMIENTO_NACIONAL = {
     "Producto": "Producto",
-    "Sucursal": "Código Local",
+    # El reporte trae TRES columnas de local: "Sucursal", "Código Local" y "Nombre
+    # Local", y no son lo mismo. El modelo deriva SucursalID de "Sucursal"; usar
+    # "Código Local" mandaba 6.964 ordenes a DESCONOCIDO (contra 1.093) y repartia
+    # las de un mismo local entre varias sucursales, lo que descuadraba el lead
+    # time por proveedor-sucursal.
+    "Sucursal": "Sucursal",
     "RazonSocial": "Razón Social Proveedor",
     "Motivo": "Motivo Compra",
     "FechaOC": "Fecha Orden de Compra",

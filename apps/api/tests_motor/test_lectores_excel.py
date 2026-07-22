@@ -126,24 +126,35 @@ def test_seguimiento_importado_sin_sucursal_queda_desconocido(tmp_path):
     assert lt["FechaPE"].to_list() == [date(2025, 3, 17)]
 
 
-def test_seguimiento_nacional_mapea_codigo_de_local(tmp_path):
+def test_seguimiento_nacional_usa_la_columna_sucursal_y_no_codigo_local(tmp_path):
+    """El reporte trae TRES columnas de local y solo una identifica la sucursal.
+
+    "Codigo Local" y "Nombre Local" existen pero no sirven: el mismo codigo
+    aparece repartido entre varias sucursales. El modelo deriva SucursalID de
+    "Sucursal", y leer la equivocada mandaba 6.964 ordenes a DESCONOCIDO y
+    descuadraba el lead time por proveedor-sucursal. Por eso los valores de las
+    tres columnas son distintos aca: si el lector cambia de columna, esto falla.
+    """
     ruta = _crear_excel(
         tmp_path / "nacional.xlsx",
         [
-            "Producto", "Código Local", "Razón Social Proveedor", "Motivo Compra",
+            "Producto", "Sucursal", "Código Local", "Nombre Local",
+            "Razón Social Proveedor", "Motivo Compra",
             "Fecha Orden de Compra", "N° Orden de Compra", "Cantidad",
             "Estado Orden de Compra", "Estado Documento Base", "Fecha Documento Base",
             "Fecha Documento P/E",
         ],
         [
-            ["19 ABC", "SUC070", "FORD CHILE", "REPOSICION", "02/01/2025", "1", 4,
-             "Pendiente", "Cerrado", "02/01/2025", "20/01/2025"],
-            ["19 XYZ", "SUC280", "FORD CHILE", "REPOSICION", "03/01/2025", "2", 7,
-             "Pendiente", "Cerrado", "03/01/2025", None],
+            ["19 ABC", "SUC070", "SUC360", "LA FLORIDA", "FORD CHILE", "REPOSICION",
+             "02/01/2025", "1", 4, "Pendiente", "Cerrado", "02/01/2025", "20/01/2025"],
+            ["19 XYZ", "SUC280", "SUC010", "CURICO", "FORD CHILE", "REPOSICION",
+             "03/01/2025", "2", 7, "Pendiente", "Cerrado", "03/01/2025", None],
         ],
         filas_previas=9,
     )
     out = F.normalizar_seguimiento(lx.leer_seguimiento_nacional_excel(ruta), para_transito=True)
+    # SUC070 -> LINDEROS y SUC280 -> CD REPUESTOS (columna "Sucursal").
+    # Si leyera "Codigo Local" daria OFICINAS CENTRALES y DESCONOCIDO.
     assert out["SucursalID"].to_list() == ["LINDEROS", "CD REPUESTOS"]
     assert out["Cantidad"].to_list() == [4, 7]
 
