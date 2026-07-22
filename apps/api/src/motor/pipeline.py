@@ -85,6 +85,24 @@ def cargar_fuentes(directorio: str | Path) -> dict[str, pl.DataFrame]:
     return fuentes
 
 
+def _valor(col: str) -> pl.Expr:
+    """VALUE() del modelo, con el locale es-CL del origen.
+
+    El Excel de stock trae el costo con coma decimal ("95233,75000000") y el
+    snapshot congelado con punto. Un `cast(Float64)` a secas devolvia null para
+    TODOS los del Excel: el motor salia con Costo Unitario vacio en el 100% de
+    las filas y, con el, el valor en CLP del sugerido.
+    """
+    txt = pl.col(col).cast(pl.Utf8, strict=False).str.strip_chars()
+    return (
+        pl.when(txt.str.contains(","))
+        # Si hay coma decimal, el punto solo puede ser separador de miles.
+        .then(txt.str.replace_all(r"\.", "").str.replace(",", "."))
+        .otherwise(txt)
+        .cast(pl.Float64, strict=False)
+    )
+
+
 def _empresa(ventas_limpias: pl.DataFrame) -> pl.DataFrame:
     """Solo Curifor / Solo Frontera / Ambas por (producto, sucursal), según la
     Fuente de las ventas limpias 12m (mismo EXCEPT del modelo)."""
@@ -237,7 +255,7 @@ def ejecutar(
     # --- Costo Unitario: MAX(VALUE(Costo)) del grupo en Stock Bodegas (como el modelo) ---
     if "costo" in fuentes:
         costo = (
-            fuentes["costo"].with_columns(pl.col("Costo").cast(pl.Float64, strict=False))
+            fuentes["costo"].with_columns(_valor("Costo").alias("Costo"))
             .filter(pl.col("Costo").is_not_null())
             .group_by("Producto").agg(pl.col("Costo").max().alias("costo_unitario"))
         )

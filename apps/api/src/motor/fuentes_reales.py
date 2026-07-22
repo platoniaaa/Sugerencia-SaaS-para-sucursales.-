@@ -173,6 +173,12 @@ def cargar_fuentes_reales(
         # Tablas chicas y estables: snapshot congelado.
         "mapeo": pl.read_csv(snap / "mapeo_master.csv"),
         "dim_producto": pl.read_csv(snap / "dim_producto.csv", schema_overrides=S),
+        # Catalogo (Descripcion, FILTRO1_Final, UnidadMedida). Faltaba aqui: el
+        # pipeline lo trata como opcional y dejaba las tres columnas vacias en el
+        # 100% de las filas cuando el motor corria por el camino de los Excel.
+        "catalogo": pl.read_csv(
+            snap / "dim_producto_catalogo.csv", schema_overrides={"Producto": pl.Utf8}
+        ),
         "dim_sucursal": pl.read_csv(snap / "dim_sucursal.csv", schema_overrides=S),
         "importados": pl.read_csv(snap / "importados.csv", schema_overrides=S),
     }

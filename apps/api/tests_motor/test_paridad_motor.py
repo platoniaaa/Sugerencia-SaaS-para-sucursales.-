@@ -178,3 +178,35 @@ def test_pipeline_export_roundtrip(fuentes, tmp_path):
     assert "total_sugerido_suc" in relee.columns and "trasladar_desde" in relee.columns
     # Es Importado / Tiene Stock CD como texto True/False (igual que la sync).
     assert set(relee.get_column("Es Importado").unique()).issubset({"True", "False"})
+
+
+def test_abc_solo_toma_combos_de_los_ultimos_12_meses():
+    """El DAX arma CombosVenta desde Ventas12m, no desde todo el historico.
+
+    Sacarlos de todas las ventas cargadas agregaba una fila por cada combo que
+    vendio ANTES de la ventana y nada dentro: 6.769 filas fantasma, todas clase D
+    con m3=m6=m12=0, que el modelo no tiene."""
+    fin = date(2026, 7, 1)  # ventana: 202507..202606
+    ventas = pl.DataFrame({
+        "Producto": ["DENTRO", "FUERA"],
+        "SUCURSAL": ["TALCA", "TALCA"],
+        "TipoVenta": ["VTA MESON", "VTA MESON"],
+        "Fecha": [date(2026, 3, 10), date(2025, 1, 15)],
+        "CantidadAjustada": [5, 5],
+        "Fuente": ["Curifor", "Curifor"],
+    })
+    vacio_mapeo = pl.DataFrame(schema={"Producto": pl.Utf8, "Producto_Master": pl.Utf8})
+    dim = pl.DataFrame({"Producto": ["DENTRO", "FUERA"], "Categoria": ["MECANICA", "MECANICA"]})
+
+    abc = clasificacion_abc.calcular_abc(ventas, vacio_mapeo, dim, fin)
+    assert abc["producto_master"].to_list() == ["DENTRO"]
+
+
+def test_costo_acepta_coma_decimal():
+    """El Excel de stock trae el costo con coma decimal ('95233,75000000') y el
+    snapshot congelado con punto. Un cast a secas devolvia null para TODOS los del
+    Excel: Costo Unitario -y con el, el valor en CLP- vacio en el 100% de las filas."""
+    df = pl.DataFrame({"Costo": ["95233,75000000", "25933", "1.234,50", " -", None]})
+    assert df.select(pipeline._valor("Costo").alias("v"))["v"].to_list() == [
+        95233.75, 25933.0, 1234.5, None, None,
+    ]
