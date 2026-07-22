@@ -55,3 +55,4 @@ docs/private/
 apps/web/scripts/*.png
 
 lista productos.csv
+logs/

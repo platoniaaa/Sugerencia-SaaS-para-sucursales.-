@@ -38,6 +38,20 @@ SNAPSHOT_DIR = Path(os.environ.get("MOTOR_SNAPSHOT_DIR", _API_DIR / "data" / "pa
 SALIDA = _API_DIR / "data" / "sugerido_motor.csv"
 
 
+def _leer_env() -> dict[str, str]:
+    """Variables PLATAFORMA_* del .env del repo. Vacio si no hay archivo."""
+    env = _fuentes._REPO_DIR / ".env"
+    if not env.exists():
+        return {}
+    valores = {}
+    for linea in env.read_text(encoding="utf-8", errors="ignore").splitlines():
+        linea = linea.strip()
+        if linea.startswith("PLATAFORMA_") and "=" in linea:
+            k, v = linea.split("=", 1)
+            valores[k.strip()] = v.strip().strip('"').strip("'")
+    return valores
+
+
 def _fin_mes_cerrado(hoy: date) -> date:
     """Primer dia del mes en curso: el motor usa meses CERRADOS."""
     return hoy.replace(day=1)
@@ -119,9 +133,13 @@ def enviar(csv_path: Path, oficial: bool = False) -> dict:
     """Sube el CSV a la plataforma: comparacion (sombra) o carga (oficial)."""
     import httpx
 
-    base = os.environ.get("PLATAFORMA_API_URL", "http://localhost:8000").rstrip("/")
-    email = os.environ.get("PLATAFORMA_EMAIL")
-    password = os.environ.get("PLATAFORMA_PASSWORD")
+    # Las credenciales pueden venir del entorno o del .env del repo (que es donde
+    # las deja el script de 1 clic). Sin esto, el job solo servia lanzado desde ese
+    # script y no, por ejemplo, desde la tarea programada.
+    cfg = {**_leer_env(), **{k: v for k, v in os.environ.items() if k.startswith("PLATAFORMA_")}}
+    base = cfg.get("PLATAFORMA_API_URL", "http://localhost:8000").rstrip("/")
+    email = cfg.get("PLATAFORMA_EMAIL")
+    password = cfg.get("PLATAFORMA_PASSWORD")
     if not email or not password:
         raise RuntimeError(
             "Faltan credenciales: define PLATAFORMA_EMAIL y PLATAFORMA_PASSWORD "

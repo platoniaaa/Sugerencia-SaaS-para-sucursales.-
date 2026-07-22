@@ -17,7 +17,10 @@
 # ============================================================
 param(
     [switch]$Oficial,
-    [switch]$IgnorarFrescura
+    [switch]$IgnorarFrescura,
+    # Guarda correo y clave en el .env para que la tarea diaria pueda correr sola
+    # (una tarea programada no puede escribir una clave a mano).
+    [switch]$GuardarCredenciales
 )
 $ErrorActionPreference = "Stop"
 $root = Split-Path $PSScriptRoot -Parent
@@ -48,6 +51,20 @@ if (-not $env:PLATAFORMA_PASSWORD) {
     $sec = Read-Host "Clave de $($env:PLATAFORMA_EMAIL)" -AsSecureString
     $env:PLATAFORMA_PASSWORD = [Runtime.InteropServices.Marshal]::PtrToStringAuto(
         [Runtime.InteropServices.Marshal]::SecureStringToBSTR($sec))
+}
+
+if ($GuardarCredenciales) {
+    # El .env vive fuera de OneDrive y esta en .gitignore: no se sincroniza ni se sube.
+    $lineas = @()
+    if (Test-Path $envFile) {
+        $lineas = Get-Content $envFile | Where-Object { $_ -notmatch '^\s*PLATAFORMA_' }
+    }
+    $lineas += "PLATAFORMA_API_URL=$($env:PLATAFORMA_API_URL)"
+    $lineas += "PLATAFORMA_EMAIL=$($env:PLATAFORMA_EMAIL)"
+    $lineas += "PLATAFORMA_PASSWORD=$($env:PLATAFORMA_PASSWORD)"
+    Set-Content -Path $envFile -Value $lineas -Encoding utf8
+    Write-Host "Credenciales guardadas en $envFile" -ForegroundColor Green
+    Write-Host "Ese archivo no se sube a GitHub ni se sincroniza a OneDrive." -ForegroundColor DarkGray
 }
 
 $modo = if ($Oficial) { "CARGA OFICIAL" } else { "modo sombra (no toca la plataforma)" }
