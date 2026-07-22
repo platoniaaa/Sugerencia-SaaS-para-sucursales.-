@@ -183,6 +183,13 @@ def cargar_fuentes_reales(
     stock = leer_stock(stock_curifor_xlsx)
     stock_frontera = leer_stock(stock_frontera_xlsx)
 
+    def _snapshot(nombre: str, **kw) -> pl.DataFrame | None:
+        """Snapshot congelado del BI, si todavía está. Es solo un respaldo: las
+        tablas chicas se calculan más abajo desde las fuentes propias, y el motor
+        tiene que poder correr con esta carpeta vacía."""
+        ruta = snap / nombre
+        return pl.read_csv(ruta, **kw) if ruta.exists() else None
+
     fuentes: dict[str, pl.DataFrame] = {
         "stock": stock.select(["Producto", "SucursalID", "Stock"]),
         "stock_frontera": stock_frontera.select(["Producto", "SucursalID", "Stock"]),
@@ -191,16 +198,16 @@ def cargar_fuentes_reales(
         # 'Dim Sucursal' es una DATATABLE escrita a mano dentro del modelo: no viene
         # de ninguna fuente, asi que vive en el codigo y no necesita snapshot.
         "dim_sucursal": dim.dim_sucursal(),
-        "mapeo": pl.read_csv(snap / "mapeo_master.csv"),
-        "dim_producto": pl.read_csv(snap / "dim_producto.csv", schema_overrides=S),
-        # Catalogo (Descripcion, FILTRO1_Final, UnidadMedida). Faltaba aqui: el
-        # pipeline lo trata como opcional y dejaba las tres columnas vacias en el
-        # 100% de las filas cuando el motor corria por el camino de los Excel.
-        "catalogo": pl.read_csv(
-            snap / "dim_producto_catalogo.csv", schema_overrides={"Producto": pl.Utf8}
-        ),
-        "importados": pl.read_csv(snap / "importados.csv", schema_overrides=S),
     }
+    for nombre, archivo, kw in (
+        ("mapeo", "mapeo_master.csv", {}),
+        ("dim_producto", "dim_producto.csv", {"schema_overrides": S}),
+        ("catalogo", "dim_producto_catalogo.csv", {"schema_overrides": {"Producto": pl.Utf8}}),
+        ("importados", "importados.csv", {"schema_overrides": S}),
+    ):
+        df = _snapshot(archivo, **kw)
+        if df is not None:
+            fuentes[nombre] = df
 
     # --- Seguimiento de compras ---
     hay_seguimiento_excel = any(
