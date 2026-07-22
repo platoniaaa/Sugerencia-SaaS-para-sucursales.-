@@ -261,3 +261,56 @@ def test_ventas_esquema_identico_al_golden_del_modelo(tmp_path):
         "Fecha": pl.Date, "CantidadAjustada": pl.Int64, "Fuente": pl.Utf8,
     }
     assert dict(out.schema) == esperado
+
+
+def test_ventas_lee_la_fecha_como_serial_de_excel(tmp_path):
+    """Los respaldos anuales NO vienen todos igual: 2026 trae datetime y 2025 el
+    serial numerico de Excel. Sin leer el serial, el archivo entero quedaba con
+    Fecha nula EN SILENCIO -198.032 ventas, medio ano de la ventana de demanda-."""
+    ruta = _crear_excel(
+        tmp_path / "2025.xlsx",
+        _ENCABEZADOS_VENTAS,
+        [
+            # 45684 = 27-ene-2025 (origen 30-dic-1899).
+            ["E01", "202501", "FACTURA S/T", 45684, "VTA MESON", "P1", 1, "REPUESTOS", "08 TALCA"],
+            ["E01", "202501", "FACTURA S/T", "2025-02-03 00:00:00", "VTA MESON",
+             "P2", 1, "REPUESTOS", "08 TALCA"],
+            ["E01", "202501", "FACTURA S/T", "14/03/2025", "VTA MESON",
+             "P3", 1, "REPUESTOS", "08 TALCA"],
+        ],
+        col_a_vacia=False,
+    )
+    df = lx.leer_ventas_excel(ruta)
+    assert df["Fecha"].null_count() == 0
+    assert df["Fecha"].to_list() == [date(2025, 1, 27), date(2025, 2, 3), date(2025, 3, 14)]
+
+
+def test_ventas_usa_tipoproducto_y_no_la_columna_tipo_producto(tmp_path):
+    """El respaldo trae DOS columnas que normalizan igual: `tipoproducto`
+    (REPUESTOS / MO_ST) y `Tipo Producto` (CAMION, RUBRO 70, SERVICIO TECNICO).
+
+    Resolviendo solo por nombre normalizado ganaba la ultima y el filtro de
+    repuestos se aplicaba sobre la equivocada: un aceite con 1.158 ventas quedaba
+    fuera del sugerido porque su `Tipo Producto` decia CAMION. Los valores de las
+    dos columnas son DISTINTOS a proposito: si alguien vuelve a tomar la otra, este
+    test falla."""
+    encabezados = [
+        "Empresa", "Periodo", "tipoDocto", "Fecha", "Tipo-Venta", "Producto",
+        "Cantidad", "tipoproducto", "SUCURSAL", "Tipo Producto",
+    ]
+    ruta = _crear_excel(
+        tmp_path / "2026.xlsx",
+        encabezados,
+        [
+            ["E01", "202601", "FACTURA S/T", "2026-01-09 00:00:00", "VTA MESON",
+             "70 ACEITE", 3, "REPUESTOS", "08 TALCA", "CAMION"],
+            ["E01", "202601", "FACTURA S/T", "2026-01-10 00:00:00", "VTA MESON",
+             "MO_FORD", 1, "MO_ST", "08 TALCA", "SERVICIO TECNICO"],
+        ],
+        col_a_vacia=False,
+    )
+    crudo = lx.leer_ventas_excel(ruta)
+    assert crudo["tipoproducto"].to_list() == ["REPUESTOS", "MO_ST"]
+    # El aceite es repuesto y entra; la mano de obra no.
+    out = F.normalizar_ventas_curifor(crudo)
+    assert out["Producto"].to_list() == ["70 ACEITE"]

@@ -44,6 +44,20 @@ def _norm(s: object) -> str:
     return "".join(c for c in txt if c.isalnum())
 
 
+def _indice_de(origen: object, exactos: dict[str, int], normalizados: dict[str, int]) -> int | None:
+    """Indice de la columna `origen`, prefiriendo la coincidencia LITERAL.
+
+    Hay reportes con dos columnas distintas que normalizan igual: el respaldo de
+    ventas trae `tipoproducto` (REPUESTO / REPUESTOS / MO_ST) y `Tipo Producto`
+    (CAMION, RUBRO 70, SERVICIO TECNICO), y no significan lo mismo. Resolviendo
+    solo por nombre normalizado ganaba la ultima y el filtro de repuestos se
+    aplicaba sobre la columna equivocada: un aceite con 1.158 ventas quedaba
+    fuera del sugerido porque su `Tipo Producto` decia CAMION.
+    """
+    j = exactos.get(str(origen).strip())
+    return j if j is not None else normalizados.get(_norm(origen))
+
+
 def _abrir_hoja(ruta: str | Path, hoja: str | None = None):
     import openpyxl  # import perezoso: solo se necesita al leer Excel
 
@@ -71,9 +85,7 @@ def leer_reporte(
     si el reporte cambio de formato. Por defecto, todas las de `columnas`.
     """
     ruta = Path(ruta)
-    requeridas_norm = {
-        _norm(columnas[d]) for d in (obligatorias if obligatorias is not None else columnas)
-    }
+    requeridas = [columnas[d] for d in (obligatorias if obligatorias is not None else columnas)]
     wb, ws = _abrir_hoja(ruta, hoja)
     try:
         filas = ws.iter_rows(values_only=True)
@@ -81,12 +93,21 @@ def leer_reporte(
         for i, fila in enumerate(filas):
             if i >= MAX_FILAS_ESCANEO:
                 break
-            presentes = {_norm(v): j for j, v in enumerate(fila) if v is not None}
-            if requeridas_norm <= set(presentes):
+            # Dos mapas: por nombre literal y por nombre normalizado. `setdefault`
+            # para que gane la PRIMERA y no la ultima; el literal manda (ver
+            # `_indice_de`: hay reportes con columnas que normalizan igual).
+            exactos: dict[str, int] = {}
+            normalizados: dict[str, int] = {}
+            for j, v in enumerate(fila):
+                if v is None:
+                    continue
+                exactos.setdefault(str(v).strip(), j)
+                normalizados.setdefault(_norm(v), j)
+            if all(_indice_de(o, exactos, normalizados) is not None for o in requeridas):
                 indices = {
-                    destino: presentes[_norm(origen)]
+                    destino: j
                     for destino, origen in columnas.items()
-                    if _norm(origen) in presentes
+                    if (j := _indice_de(origen, exactos, normalizados)) is not None
                 }
                 break
         if indices is None:
@@ -124,12 +145,26 @@ def leer_reporte(
 
 
 def _a_fecha(col: str) -> pl.Expr:
-    """Texto -> Date, aceptando `dd/mm/aaaa` y el ISO que deja un datetime real."""
-    c = pl.col(col).str.strip_chars()
+    """-> Date desde `dd/mm/aaaa`, ISO, o el serial numerico de Excel.
+
+    Los respaldos anuales de ventas NO vienen todos igual: el de 2026 trae la
+    fecha como datetime y el de 2025 como serial de Excel (45684 = 27-ene-2025).
+    Sin el tercer camino el serial se leia como el texto "45684", no matcheaba
+    ningun formato y el archivo entero quedaba con Fecha nula **en silencio**:
+    198.032 ventas, medio ano de la ventana de demanda, perdidas sin un error.
+    """
+    c = pl.col(col).cast(pl.Utf8, strict=False).str.strip_chars()
+    serial = pl.col(col).cast(pl.Float64, strict=False)
     return pl.coalesce(
         c.str.to_date("%d/%m/%Y", strict=False),
         c.str.to_date("%Y-%m-%d", strict=False),
         c.str.head(10).str.to_date("%Y-%m-%d", strict=False),
+        # Serial de Excel: el origen es 30-dic-1899 por el bug del 1900 bisiesto.
+        # El rango acota a fechas plausibles (1954-2119) para no convertir por
+        # accidente un numero que no era una fecha.
+        pl.when(serial.is_between(20000, 80000))
+        .then(pl.lit(dt.date(1899, 12, 30)) + pl.duration(days=serial.cast(pl.Int64)))
+        .otherwise(None),
     ).alias(col)
 
 
