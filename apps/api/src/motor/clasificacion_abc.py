@@ -99,7 +99,11 @@ def calcular_abc(
     local = ["producto_master", "sucursal_final"]
     agg = ["producto_master"]
 
-    combos = v.select(local).unique()
+    # Los combos salen de los ULTIMOS 12 MESES, no de todo lo que se haya cargado
+    # (DAX: CombosVenta = DISTINCT(SELECTCOLUMNS(Ventas12m, ...))). Sacarlos de `v`
+    # entero agregaba una fila por cada combo que vendio antes de la ventana y nada
+    # dentro: 6.769 filas fantasma, todas clase D con m3=m6=m12=0.
+    combos = v.filter(pl.col("mes") >= ini12).select(local).unique()
 
     def _m(keys, ini, nom):
         return _contar_meses(vpos, ini, keys, nom)
