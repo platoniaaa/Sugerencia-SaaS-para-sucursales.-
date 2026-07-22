@@ -23,7 +23,29 @@ from dataclasses import dataclass, field
 import polars as pl
 
 _API_DIR = pathlib.Path(__file__).resolve().parents[2]
-CRUDOS_DIR = pathlib.Path(os.environ.get("MOTOR_CRUDOS_DIR", _API_DIR / "data" / "crudos"))
+_REPO_DIR = _API_DIR.parents[1]
+
+
+def _crudos_dir() -> pathlib.Path:
+    """Carpeta de datos crudos: variable de entorno, .env del repo, o el default.
+
+    El .env se lee a mano (sin dependencias) porque el motor corre tambien fuera
+    de la API, donde no hay pydantic-settings cargando la configuracion.
+    """
+    valor = os.environ.get("MOTOR_CRUDOS_DIR")
+    if not valor:
+        env = _REPO_DIR / ".env"
+        if env.exists():
+            for linea in env.read_text(encoding="utf-8").splitlines():
+                linea = linea.strip()
+                if linea.startswith("MOTOR_CRUDOS_DIR="):
+                    # La ruta puede traer espacios y no estar entrecomillada.
+                    valor = linea.split("=", 1)[1].strip().strip('"').strip("'")
+                    break
+    return pathlib.Path(valor) if valor else _API_DIR / "data" / "crudos"
+
+
+CRUDOS_DIR = _crudos_dir()
 
 _EXT = (".xlsx", ".xlsm", ".csv")
 

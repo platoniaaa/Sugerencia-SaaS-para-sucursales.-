@@ -28,7 +28,12 @@ from datetime import date
 from pathlib import Path
 
 _API_DIR = Path(__file__).resolve().parents[2]
-CRUDOS_DIR = Path(os.environ.get("MOTOR_CRUDOS_DIR", _API_DIR / "data" / "crudos"))
+# La carpeta de crudos la resuelve `motor.fuentes` (variable de entorno o .env).
+# Tener aqui una copia de esa logica hacia que el job leyera el stock y el
+# seguimiento de la carpeta buena y las VENTAS de la copia vieja de data/crudos.
+from ..motor import fuentes as _fuentes  # noqa: E402
+
+CRUDOS_DIR = _fuentes.CRUDOS_DIR
 SNAPSHOT_DIR = Path(os.environ.get("MOTOR_SNAPSHOT_DIR", _API_DIR / "data" / "paridad"))
 SALIDA = _API_DIR / "data" / "sugerido_motor.csv"
 
