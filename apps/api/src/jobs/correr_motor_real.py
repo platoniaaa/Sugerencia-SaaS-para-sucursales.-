@@ -38,25 +38,23 @@ def _fin_mes_cerrado(hoy: date) -> date:
     return hoy.replace(day=1)
 
 
-def _buscar(patrones: list[str], obligatorio: bool = True) -> Path | None:
-    """Primer archivo de la carpeta de crudos que matchee, el mas reciente primero."""
+def _buscar(fuente: str, obligatorio: bool = True) -> Path | None:
+    """Archivo de una fuente declarada en `motor.fuentes.FUENTES`.
+
+    Usa esas specs y NO patrones propios: ahi cada fuente ya trae sus exclusiones
+    ("seguimiento" nacional excluye importado y frontera). Un patron ad-hoc como
+    "*seguimiento*compras*" matchea las tres, y al desempatar por fecha el motor
+    terminaba leyendo el importado como si fuera el nacional: 48.000 ordenes de
+    compra quedaban fuera y casi todos los productos se quedaban sin proveedor.
+    """
     from ..motor import fuentes
 
-    candidatos = [
-        p for p in CRUDOS_DIR.rglob("*")  # recursivo: la carpeta puede tener subcarpetas
-        if p.is_file()
-        and p.suffix.lower() in (".xlsx", ".xlsm", ".csv")
-        and not p.name.startswith("~$")
-        and any(fuentes._matchea(p.name, fuentes.FuenteSpec([pat])) for pat in patrones)
-    ] if CRUDOS_DIR.exists() else []
-    if not candidatos:
+    try:
+        return fuentes.ruta_de(fuente)
+    except FileNotFoundError:
         if obligatorio:
-            raise FileNotFoundError(
-                f"No se encontro ningun archivo {patrones} en {CRUDOS_DIR}. "
-                "Revisa que la biblioteca de SharePoint este sincronizada."
-            )
+            raise
         return None
-    return sorted(candidatos, key=lambda p: p.stat().st_mtime, reverse=True)[0]
 
 
 def _archivos_de_ventas(fin_mes_cerrado: date) -> list[Path]:
@@ -85,14 +83,12 @@ def construir_csv(hoy: date | None = None) -> Path:
     hoy = hoy or date.today()
     ventas = _archivos_de_ventas(_fin_mes_cerrado(hoy))
     fuentes = fuentes_reales.cargar_fuentes_reales(
-        stock_curifor_xlsx=_buscar(["*stock*bodega*", "*stock*curifor*"]),
-        stock_frontera_xlsx=_buscar(["*stock*frontera*"]),
+        stock_curifor_xlsx=_buscar("stock_bodegas"),
+        stock_frontera_xlsx=_buscar("stock_bodegas_frontera"),
         snapshot_dir=SNAPSHOT_DIR,
-        seguimiento_nacional_xlsx=_buscar(
-            ["*seguimiento*nacional*", "*seguimiento*compras*"], obligatorio=False
-        ),
-        seguimiento_importado_xlsx=_buscar(["*seguimiento*importado*"], obligatorio=False),
-        seguimiento_frontera_xlsx=_buscar(["*seguimiento*frontera*"], obligatorio=False),
+        seguimiento_nacional_xlsx=_buscar("seguimiento_curifor_nacional", obligatorio=False),
+        seguimiento_importado_xlsx=_buscar("seguimiento_curifor_importado", obligatorio=False),
+        seguimiento_frontera_xlsx=_buscar("seguimiento_frontera", obligatorio=False),
         ventas_xlsx=ventas or None,
     )
     df = pipeline.ejecutar(fuentes, fin_mes_cerrado=_fin_mes_cerrado(hoy), hoy=hoy)
