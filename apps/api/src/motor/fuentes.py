@@ -81,8 +81,13 @@ FUENTES: dict[str, FuenteSpec] = {
         ["*frontera*seguimiento*", "*seguimiento*frontera*"], header_row=1
     ),
     # Fuentes menores.
-    "mix_reemplazos": FuenteSpec(["*mix*", "*reemplaz*"], header_row=1),
-    "catalogo": FuenteSpec(["*maestro*", "*listado*maestro*"], header_row=1),
+    "mix_reemplazos": FuenteSpec(["*mix*", "*reemplaz*"], excluye=["*~*"], header_row=1),
+    # Listado maestro de repuestos: de aqui sale la Categoria que excluye COLISION
+    # y CAMPANAS del sugerido. El export real se llama "lista rep (lista precios)".
+    "catalogo": FuenteSpec(
+        ["*maestro*", "*listado*maestro*", "*lista*rep*", "*lista*precio*"],
+        excluye=["*stock*", "*venta*", "*seguimiento*"],
+    ),
     "dim_sucursal": FuenteSpec(
         ["*sucursal*", "*dim*local*"], excluye=["*seguimiento*", "*stock*", "*venta*"]
     ),
@@ -99,6 +104,18 @@ def _matchea(nombre: str, spec: FuenteSpec) -> bool:
     if any(fnmatch.fnmatch(n, _norm(p)) for p in spec.excluye):
         return False
     return any(fnmatch.fnmatch(n, _norm(p)) for p in spec.incluye)
+
+
+def es_de_alguna_fuente(nombre: str, excepto: str | None = None) -> bool:
+    """¿El archivo corresponde a alguna fuente declarada (fuera de `excepto`)?
+
+    Sirve para identificar los respaldos anuales de venta por descarte: se llaman
+    "2025 (4).xlsx" y no hay patrón que los reconozca, pero sí se sabe qué NO son.
+    Una lista negra a mano ya falló dos veces (el seguimiento importado leído como
+    nacional, el "BASE NUEVO MIX 2026_1" leído como respaldo de ventas)."""
+    return any(
+        _matchea(nombre, spec) for n, spec in FUENTES.items() if n != excepto
+    )
 
 
 def _candidatos(fuente: str) -> list[pathlib.Path]:

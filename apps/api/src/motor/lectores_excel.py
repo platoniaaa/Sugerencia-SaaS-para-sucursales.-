@@ -275,6 +275,9 @@ COLUMNAS_VENTAS = {
     "tipoDocto": "tipoDocto",
     "tipoproducto": "tipoproducto",
     "Empresa": "Empresa",
+    # La descripcion del producto sale de las VENTAS, no del listado maestro
+    # (DAX: 'Dim Producto'[Descripcion] = MINX sobre 'Ventas Unificadas').
+    "Descripcion Producto": "Descripcion Producto",
 }
 
 # Valor canonico que espera el filtro de repuestos del conector.
@@ -365,3 +368,41 @@ def leer_ventas_frontera_excel(ruta: str | Path) -> pl.DataFrame:
         obligatorias=["producto", "cantidad", "Documento", "Docto-Emitido", "tipoproducto"],
     )
     return df.with_columns(_a_fecha("fecha"), _a_entero("cantidad"))
+
+
+# --------------------------------------------------------------------------- #
+# Listado maestro de repuestos y base de reemplazos
+# --------------------------------------------------------------------------- #
+def leer_listado_maestro(ruta: str | Path) -> pl.DataFrame:
+    """'Listado Maestro Repuestos' (export de Flexline en CSV) -> Producto, Categoria.
+
+    El export viene con `;`, en latin-1 y SIN entrecomillar: hay glosas con comillas
+    sueltas (medidas en pulgadas) que rompen el parser si se interpretan como
+    delimitador de texto, por eso `quote_char=None`.
+    """
+    df = pl.read_csv(
+        ruta, separator=";", encoding="latin-1", quote_char=None, infer_schema_length=0
+    )
+    faltan = {"Producto", "Categoria"} - set(df.columns)
+    if faltan:
+        raise ValueError(
+            f"El listado maestro {Path(ruta).name} no trae {sorted(faltan)}. "
+            f"Columnas encontradas: {df.columns[:12]}"
+        )
+    cols = ["Producto", "Categoria"] + [c for c in ("Glosa", "Unidad", "Familia") if c in df.columns]
+    return df.select(cols).with_columns(pl.col("Producto").str.strip_chars())
+
+
+# La Hoja2 del "BASE NUEVO MIX" es la que lee el modelo (no Hoja1, que es una tabla
+# dinamica, ni BBDD). Trae una fila en blanco antes del encabezado.
+COLUMNAS_MIX = {
+    "Producto": "Producto",
+    "Reem1": "Reem1",
+    "Reem2": "Reem2",
+    "Reem3": "Reem3",
+}
+
+
+def leer_mix_reemplazos(ruta: str | Path) -> pl.DataFrame:
+    """'mix andres' -> Producto, Reem1, Reem2, Reem3 (base de los grupos de reemplazo)."""
+    return leer_reporte(ruta, COLUMNAS_MIX, hoja="Hoja2", obligatorias=["Producto", "Reem1"])

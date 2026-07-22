@@ -72,13 +72,13 @@ def _archivos_de_ventas(fin_mes_cerrado: date) -> list[Path]:
     anios = {str(fin_mes_cerrado.year), str(fin_mes_cerrado.year - 1)}
     if not CRUDOS_DIR.exists():
         return []
+    # Los respaldos se identifican POR DESCARTE: se llaman "2025 (4).xlsx" y no hay
+    # patron que los reconozca, pero si se sabe que no son stock, ni seguimiento, ni
+    # el mix, ni las ventas de Frontera (que tienen otro esquema y otros filtros).
     return sorted(
         p for p in CRUDOS_DIR.rglob("*.xlsx")
         if not p.name.startswith("~$")
-        and "stock" not in p.name.lower()
-        and "seguimiento" not in p.name.lower()
-        # Frontera entra por su propia fuente: otro esquema y otros filtros.
-        and "frontera" not in p.name.lower()
+        and not _fuentes.es_de_alguna_fuente(p.name, excepto="ventas")
         and any(a in p.name for a in anios)
     )
 
@@ -104,6 +104,11 @@ def construir_csv(hoy: date | None = None) -> Path:
         seguimiento_frontera_xlsx=_buscar("seguimiento_frontera", obligatorio=False),
         ventas_xlsx=ventas or None,
         ventas_frontera_crudo=ventas_frontera,
+        # Con estos dos el motor CALCULA las tablas chicas (categoria, catalogo,
+        # grupos de reemplazo) en vez de leer el snapshot congelado del BI.
+        listado_maestro=_buscar("catalogo", obligatorio=False),
+        mix_reemplazos_xlsx=_buscar("mix_reemplazos", obligatorio=False),
+        fin_mes_cerrado=_fin_mes_cerrado(hoy),
     )
     df = pipeline.ejecutar(fuentes, fin_mes_cerrado=_fin_mes_cerrado(hoy), hoy=hoy)
     SALIDA.parent.mkdir(parents=True, exist_ok=True)
