@@ -333,3 +333,35 @@ def leer_ventas_excel(rutas: str | Path | Iterable[str | Path]) -> pl.DataFrame:
     if not frames:
         raise ValueError("leer_ventas_excel necesita al menos un archivo")
     return frames[0] if len(frames) == 1 else pl.concat(frames, how="vertical_relaxed")
+
+
+# --------------------------------------------------------------------------- #
+# Ventas Frontera (E07)
+# --------------------------------------------------------------------------- #
+# Los nombres son los del SELECT que el modelo hace contra Flexline, asi que el
+# reporte exportado los trae tal cual. OJO: igual que el respaldo Curifor, trae
+# DOS columnas de tipo de producto -`tipoproducto` (REPUESTO / MO_ST) y
+# `TIPO PRODUCTO` (REPUESTOS / MECANICA / LUBRICANTE)- que normalizan al mismo
+# nombre. El modelo filtra por la primera; `leer_reporte` la resuelve por
+# coincidencia literal (ver `_indice_de`).
+COLUMNAS_VENTAS_FRONTERA = {
+    "producto": "producto",
+    "SUCURSAL": "SUCURSAL",
+    "Tipo-Venta": "Tipo-Venta",
+    "fecha": "fecha",
+    "cantidad": "cantidad",
+    "Documento": "Documento",
+    "Docto-Emitido": "Docto-Emitido",
+    "tipoproducto": "tipoproducto",
+}
+
+
+def leer_ventas_frontera_excel(ruta: str | Path) -> pl.DataFrame:
+    """'Informe Gestion Produccion REP ST GAR D&P' (E07) -> crudo de
+    `normalizar_ventas_frontera`, que aplica los filtros del modelo."""
+    df = leer_reporte(
+        ruta,
+        COLUMNAS_VENTAS_FRONTERA,
+        obligatorias=["producto", "cantidad", "Documento", "Docto-Emitido", "tipoproducto"],
+    )
+    return df.with_columns(_a_fecha("fecha"), _a_entero("cantidad"))

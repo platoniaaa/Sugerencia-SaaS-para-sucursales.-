@@ -63,6 +63,12 @@ FUENTES: dict[str, FuenteSpec] = {
     # Ventas transaccionales (RespaldosBBDD). Header directo. Puede venir partido
     # por año; el motor concatena todos los que matcheen (ver cargar_ventas).
     "ventas": FuenteSpec(["*venta*"], excluye=["*presupuesto*", "*post*venta*", "*produccion*"]),
+    # Ventas Frontera (E07): 'Informe Gestion Produccion REP ST GAR D&P'. Va aparte
+    # porque tiene otro esquema y otros filtros que las de Curifor.
+    "ventas_frontera": FuenteSpec(
+        ["*vta*frontera*", "*venta*frontera*", "*frontera*vta*", "*frontera*venta*"],
+        excluye=["*stock*", "*seguimiento*"],
+    ),
     # Stock por bodega Curifor y Frontera (Abastecimiento-DataBI). Header directo.
     "stock_bodegas": FuenteSpec(["*stock*bodega*"], excluye=["*frontera*"]),
     "stock_bodegas_frontera": FuenteSpec(["*stock*frontera*", "*stock*bodegas*frontera*"]),

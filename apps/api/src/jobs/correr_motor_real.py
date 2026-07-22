@@ -77,16 +77,24 @@ def _archivos_de_ventas(fin_mes_cerrado: date) -> list[Path]:
         if not p.name.startswith("~$")
         and "stock" not in p.name.lower()
         and "seguimiento" not in p.name.lower()
+        # Frontera entra por su propia fuente: otro esquema y otros filtros.
+        and "frontera" not in p.name.lower()
         and any(a in p.name for a in anios)
     )
 
 
 def construir_csv(hoy: date | None = None) -> Path:
     """Corre el pipeline completo con los crudos reales y escribe el CSV contrato."""
-    from ..motor import fuentes_reales, pipeline
+    from ..motor import fuentes_reales, lectores_excel, pipeline
 
     hoy = hoy or date.today()
     ventas = _archivos_de_ventas(_fin_mes_cerrado(hoy))
+    # Ventas Frontera (E07): opcional, pero sin ellas el motor pierde los combos
+    # que solo se venden ahi y subestima la demanda de los que venden en las dos.
+    frontera_xlsx = _buscar("ventas_frontera", obligatorio=False)
+    ventas_frontera = (
+        lectores_excel.leer_ventas_frontera_excel(frontera_xlsx) if frontera_xlsx else None
+    )
     fuentes = fuentes_reales.cargar_fuentes_reales(
         stock_curifor_xlsx=_buscar("stock_bodegas"),
         stock_frontera_xlsx=_buscar("stock_bodegas_frontera"),
@@ -95,6 +103,7 @@ def construir_csv(hoy: date | None = None) -> Path:
         seguimiento_importado_xlsx=_buscar("seguimiento_curifor_importado", obligatorio=False),
         seguimiento_frontera_xlsx=_buscar("seguimiento_frontera", obligatorio=False),
         ventas_xlsx=ventas or None,
+        ventas_frontera_crudo=ventas_frontera,
     )
     df = pipeline.ejecutar(fuentes, fin_mes_cerrado=_fin_mes_cerrado(hoy), hoy=hoy)
     SALIDA.parent.mkdir(parents=True, exist_ok=True)

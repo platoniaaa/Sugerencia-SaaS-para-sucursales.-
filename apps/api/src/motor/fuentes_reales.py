@@ -143,6 +143,7 @@ def cargar_fuentes_reales(
     seguimiento_importado_xlsx: str | Path | None = None,
     seguimiento_frontera_xlsx: str | Path | None = None,
     ventas_xlsx: str | Path | list[str | Path] | None = None,
+    ventas_frontera_crudo: pl.DataFrame | None = None,
     sql_conn=None,
 ) -> dict[str, pl.DataFrame]:
     """Arma el dict `fuentes` para `pipeline.ejecutar` desde los crudos reales.
@@ -211,7 +212,15 @@ def cargar_fuentes_reales(
         from . import lectores_excel as lx
         from .conectores import sql_flexline as sf
 
-        fuentes["ventas"] = sf.normalizar_ventas_curifor(lx.leer_ventas_excel(ventas_xlsx))
+        # 'Ventas Unificadas' del modelo = Curifor (E01) UNION Frontera (E07). Sin la
+        # parte de Frontera el motor pierde los combos que solo venden ahi y subestima
+        # la demanda de los que venden en las dos.
+        fuentes["ventas"] = sf.unir_ventas(
+            sf.normalizar_ventas_curifor(lx.leer_ventas_excel(ventas_xlsx)),
+            sf.normalizar_ventas_frontera(ventas_frontera_crudo)
+            if ventas_frontera_crudo is not None
+            else None,
+        )
     elif sql_conn is not None:
         from .conectores import sql_flexline
 
