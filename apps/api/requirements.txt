@@ -13,6 +13,7 @@ pydantic-settings>=2.7
 python-multipart>=0.0.20
 openpyxl>=3.1.5
 httpx>=0.28
+truststore>=0.9  # confiar en el almacen de certificados del SO (proxy corporativo)
 # Driver PostgreSQL para produccion (Supabase). pg8000 es Python puro: sin compilar,
 # funciona en cualquier version de Python (incluida 3.14) y en la nube.
 pg8000>=1.31

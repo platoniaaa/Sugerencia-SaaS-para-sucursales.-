@@ -27,6 +27,17 @@ import sys
 from datetime import date
 from pathlib import Path
 
+# El proxy corporativo intercepta el HTTPS con su propio certificado. truststore
+# hace que Python confie en el almacen de certificados del sistema (Windows), donde
+# TI instalo ese certificado, en vez del bundle propio de Python -> las llamadas a
+# la plataforma dejan de fallar con "self-signed certificate in certificate chain".
+try:
+    import truststore
+
+    truststore.inject_into_ssl()
+except Exception:  # noqa: BLE001 - si no esta, se sigue con el bundle por defecto
+    pass
+
 _API_DIR = Path(__file__).resolve().parents[2]
 # La carpeta de crudos la resuelve `motor.fuentes` (variable de entorno o .env).
 # Tener aqui una copia de esa logica hacia que el job leyera el stock y el
@@ -50,6 +61,69 @@ def _leer_env() -> dict[str, str]:
             k, v = linea.split("=", 1)
             valores[k.strip()] = v.strip().strip('"').strip("'")
     return valores
+
+
+def _credenciales() -> tuple[str, str | None, str | None]:
+    """(base_url, email, password) desde el entorno o el .env del repo."""
+    cfg = {**_leer_env(), **{k: v for k, v in os.environ.items() if k.startswith("PLATAFORMA_")}}
+    return (
+        cfg.get("PLATAFORMA_API_URL", "http://localhost:8000").rstrip("/"),
+        cfg.get("PLATAFORMA_EMAIL"),
+        cfg.get("PLATAFORMA_PASSWORD"),
+    )
+
+
+def obtener_config() -> dict | None:
+    """Pide a la plataforma la configuracion calibrable del modelo.
+
+    Devuelve None si no se puede (sin credenciales, sin red, error): en ese caso
+    el motor sigue con las constantes de `parametros.py`, que son iguales a los
+    defaults de la config, asi que el resultado no cambia.
+    """
+    import httpx
+
+    base, email, password = _credenciales()
+    if not email or not password:
+        return None
+    try:
+        with httpx.Client(timeout=60) as c:
+            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
+            r.raise_for_status()
+            token = r.json()["token"]
+            r = c.get(f"{base}/api/admin/config-modelo", headers={"Authorization": f"Bearer {token}"})
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:  # noqa: BLE001
+        print(f"  (config remota no disponible, se usan los valores del codigo: {e})")
+        return None
+
+
+def aplicar_config(cfg: dict) -> None:
+    """Sobrescribe las constantes de `parametros.py` con la config remota.
+
+    Los modulos del motor leen `P.X` en tiempo de ejecucion, asi que rebindear los
+    atributos del modulo antes de correr el pipeline basta para calibrarlo sin
+    tocar codigo. Solo se tocan las llaves presentes (robusto a versiones futuras).
+    """
+    from ..motor import parametros as P
+
+    if "ciclo_orden_dias" in cfg:
+        P.CICLO_ORDEN_DIAS = int(cfg["ciclo_orden_dias"])
+    if "ciclo_orden_dias_cd" in cfg:
+        P.CICLO_ORDEN_DIAS_CD = int(cfg["ciclo_orden_dias_cd"])
+    if cfg.get("z_por_clase"):
+        P.Z_POR_CLASE = {k: float(v) for k, v in cfg["z_por_clase"].items()}
+    if cfg.get("z_importado_cd"):
+        P.Z_IMPORTADO_CD = {k: float(v) for k, v in cfg["z_importado_cd"].items()}
+    if "lead_time_fallback_dias" in cfg:
+        P.LT_FALLBACK_DIAS = int(cfg["lead_time_fallback_dias"])
+    if "winsor_k" in cfg:
+        P.WINSOR_K = float(cfg["winsor_k"])
+    origen = "default" if cfg.get("es_default") else f"editada por {cfg.get('creado_por')}"
+    print(
+        f"  config del modelo: ciclo {P.CICLO_ORDEN_DIAS}/{P.CICLO_ORDEN_DIAS_CD} dias, "
+        f"Z {P.Z_POR_CLASE}, winsor k={P.WINSOR_K} ({origen})"
+    )
 
 
 def _fin_mes_cerrado(hoy: date) -> date:
@@ -102,6 +176,11 @@ def construir_csv(hoy: date | None = None) -> Path:
     from ..motor import fuentes_reales, lectores_excel, pipeline
 
     hoy = hoy or date.today()
+    # Calibracion: si la plataforma tiene parametros configurados, se aplican antes
+    # de calcular. Si no responde, se sigue con los valores del codigo.
+    cfg = obtener_config()
+    if cfg:
+        aplicar_config(cfg)
     ventas = _archivos_de_ventas(_fin_mes_cerrado(hoy))
     # Ventas Frontera (E07): opcional, pero sin ellas el motor pierde los combos
     # que solo se venden ahi y subestima la demanda de los que venden en las dos.
@@ -133,13 +212,9 @@ def enviar(csv_path: Path, oficial: bool = False) -> dict:
     """Sube el CSV a la plataforma: comparacion (sombra) o carga (oficial)."""
     import httpx
 
-    # Las credenciales pueden venir del entorno o del .env del repo (que es donde
-    # las deja el script de 1 clic). Sin esto, el job solo servia lanzado desde ese
-    # script y no, por ejemplo, desde la tarea programada.
-    cfg = {**_leer_env(), **{k: v for k, v in os.environ.items() if k.startswith("PLATAFORMA_")}}
-    base = cfg.get("PLATAFORMA_API_URL", "http://localhost:8000").rstrip("/")
-    email = cfg.get("PLATAFORMA_EMAIL")
-    password = cfg.get("PLATAFORMA_PASSWORD")
+    # Las credenciales vienen del entorno o del .env del repo (donde las deja el
+    # script de 1 clic). Sin esto el job solo servia lanzado desde ese script.
+    base, email, password = _credenciales()
     if not email or not password:
         raise RuntimeError(
             "Faltan credenciales: define PLATAFORMA_EMAIL y PLATAFORMA_PASSWORD "
