@@ -146,13 +146,18 @@ def test_frescura_marca_los_archivos_viejos(tmp_path, monkeypatch):
 
     viejo = tmp_path / "Stock bodegas.xlsx"
     viejo.write_bytes(b"x")
-    import os, time
-    hace_10_dias = time.time() - 10 * 86400
-    os.utime(viejo, (hace_10_dias, hace_10_dias))
+    import os
+    from datetime import datetime, time as _t
+    # La edad se mide contra el `hoy` que se le pasa a revisar_frescura, no contra el
+    # reloj: el mtime se ancla 10 dias antes de ese `hoy` (si se usara time.time() el
+    # test cambiaba de resultado al cambiar el dia real).
+    hoy = date(2026, 7, 22)
+    hace_10 = datetime.combine(hoy, _t(12, 0)).timestamp() - 10 * 86400
+    os.utime(viejo, (hace_10, hace_10))
 
     monkeypatch.setattr(
         fuentes, "ruta_de",
         lambda f: viejo if f == "stock_bodegas" else (_ for _ in ()).throw(FileNotFoundError()),
     )
-    avisos = job.revisar_frescura(date(2026, 7, 22))
+    avisos = job.revisar_frescura(hoy)
     assert len(avisos) == 1 and "Stock bodegas.xlsx" in avisos[0] and "10 dias" in avisos[0]

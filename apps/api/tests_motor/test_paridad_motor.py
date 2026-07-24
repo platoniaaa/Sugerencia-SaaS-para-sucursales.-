@@ -9,6 +9,7 @@ Cada cálculo del motor es por producto, así que el subconjunto conserva la par
 Si algún cambio futuro al motor rompe la paridad, estos tests fallan señalando la
 etapa y las filas afectadas. Para regenerar los fixtures: `python -m tests_motor.regenerar_fixtures`.
 """
+import math
 from datetime import date
 from pathlib import Path
 
@@ -82,6 +83,70 @@ def _mismatch(motor: pl.DataFrame, golden: pl.DataFrame, pares, tol=None):
     return j.filter(~cond_ok)
 
 
+def _solo_directo(golden: pl.DataFrame, etapas) -> pl.DataFrame:
+    """El golden sin las filas abastecidas por CD.
+
+    El ciclo de orden vía CD cambió de 3 a 5 días por decisión de Abastecimiento
+    (Marilyn Ramos, 24-jul-2026: "en ambos debe ser 5"). Eso mueve el stock de
+    seguridad —y con él, sugerido y traslados— de las filas abastecidas por CD
+    respecto del golden extraído del DAX viejo (que usaba 3). Esas filas ya NO
+    deben calzar con ese golden; la regla nueva la fija `test_ciclo_orden_cd_es_5`.
+    Las de compra directa (ciclo 5 antes y ahora) se siguen validando contra el DAX.
+    """
+    cd = (
+        etapas["lt"].filter(pl.col("abastece_cd") == "Si")
+        .select(
+            pl.col("producto_master").alias("Producto"),
+            pl.col("sucursal_final").alias("SucursalID"),
+        )
+        .unique()
+    )
+    return golden.join(cd, on=CLAVE, how="anti")
+
+
+def test_ciclo_orden_cd_es_5(etapas):
+    """Regla nueva (Marilyn, 24-jul): el ciclo de orden vía CD es 5, no 3.
+
+    Se verifica desde la FÓRMULA, no contra el golden: para una fila abastecida por
+    CD con desviación > 0, el stock de seguridad debe ser
+    ROUND(Z · σ · √((LT_efectivo + 5) / 22)) — y NO el que daría con 3.
+    """
+    z_por_clase = {"A": 1.645, "B": 1.282, "C": 0.842, "D": 0.0}
+    z_imp_cd = {"A": 1.282, "B": 1.036}
+    ss = etapas["ss"].join(
+        etapas["dem"].select(["producto_master", "sucursal_final", "desv_std_mensual"]),
+        on=["producto_master", "sucursal_final"], how="left",
+    )
+    cd = ss.filter(
+        (pl.col("abastece_cd") == "Si")
+        & (pl.col("desv_std_mensual") > 0)
+        & pl.col("stock_seguridad").is_not_null()
+    )
+    assert cd.height > 0, "el fixture no tiene filas abastecidas por CD para probar"
+
+    revisadas = 0
+    for row in cd.head(25).iter_rows(named=True):
+        es_cd_suc = row["sucursal_final"] == "CD REPUESTOS"
+        clase = row["clasificacion_abc_agregada"] if es_cd_suc else row["clasificacion_abc"]
+        if row["es_importado"] and clase in z_imp_cd:
+            z = z_imp_cd[clase]
+        else:
+            z = z_por_clase.get(clase, 0.0)
+        sigma = row["desv_std_mensual"]
+        lt_ef = row["lt_efectivo"]
+        esperado_5 = math.floor(z * sigma * math.sqrt((lt_ef + 5) / 22) + 0.5)
+        esperado_3 = math.floor(z * sigma * math.sqrt((lt_ef + 3) / 22) + 0.5)
+        assert row["stock_seguridad"] == esperado_5, (
+            f"{row['producto_master']}/{row['sucursal_final']}: "
+            f"SS={row['stock_seguridad']} pero con CO=5 deberia ser {esperado_5}"
+        )
+        # Cuando 5 y 3 dan distinto, confirmamos que se aplico el 5 (no el 3 viejo).
+        if esperado_5 != esperado_3:
+            assert row["stock_seguridad"] != esperado_3
+            revisadas += 1
+    assert revisadas > 0, "ninguna fila distingue CO=5 de CO=3; el test no prueba nada"
+
+
 def test_abc_paridad(etapas):
     g = _golden("golden_abc.csv")
     d = _mismatch(etapas["abc"], g, [("m3", "m3"), ("m6", "m6"), ("m12", "m12")], tol=0)
@@ -106,12 +171,16 @@ def test_lead_time_safety_paridad(etapas):
         tol=0.05,
     )
     assert d_num.height == 0, f"lead time difiere en {d_num.height}: {d_num.select(CLAVE).head(5).to_dicts()}"
-    d_ss = _mismatch(etapas["ss"], g, [("stock_seguridad", "StockSeguridad")], tol=0.5)
+    # Safety stock: solo compra directa contra el DAX. Las de CD cambiaron por el
+    # ciclo de orden 3->5 (ver _solo_directo) y las cubre test_ciclo_orden_cd_es_5.
+    d_ss = _mismatch(etapas["ss"], _solo_directo(g, etapas), [("stock_seguridad", "StockSeguridad")], tol=0.5)
     assert d_ss.height == 0, f"safety stock difiere en {d_ss.height}: {d_ss.select(CLAVE).head(5).to_dicts()}"
 
 
 def test_sugerido_paridad(etapas):
-    g = _golden("golden_sugerido.csv")
+    # Solo compra directa contra el DAX: el sugerido de las filas de CD se movio con
+    # el ciclo de orden 3->5 (ver _solo_directo / test_ciclo_orden_cd_es_5).
+    g = _solo_directo(_golden("golden_sugerido.csv"), etapas)
     d = _mismatch(
         etapas["sug"], g,
         [("sugerido", "Sugerido"), ("stock_activo", "StockActivo"), ("stock_transito", "StockTransito"),
@@ -124,7 +193,9 @@ def test_sugerido_paridad(etapas):
 
 
 def test_traslados_paridad(etapas):
-    g = _golden("golden_traslados.csv")
+    # Solo compra directa contra el DAX: traslado y compra neta de las filas de CD
+    # se movieron con el ciclo de orden 3->5 (ver _solo_directo).
+    g = _solo_directo(_golden("golden_traslados.csv"), etapas)
     d = _mismatch(
         etapas["tr"], g,
         [("prioridad_cd", "PrioridadCD"), ("stock_cd", "StockCD"), ("sugerido_traslado", "Traslado"),
@@ -139,7 +210,9 @@ def test_traslados_paridad(etapas):
 def test_traslado_lateral_contenido(etapas):
     """El texto lateral: mismas fuentes+cantidades. Ignora el orden entre stocks
     empatados (el desempate de CONCATENATEX no es determinista en el modelo)."""
-    g = _golden("golden_traslados.csv")
+    # Solo compra directa: el lateral depende del sugerido, que en las filas de CD
+    # cambio con el ciclo de orden 3->5 (ver _solo_directo).
+    g = _solo_directo(_golden("golden_traslados.csv"), etapas)
     j = g.join(_motor_key(etapas["tr"]), on=CLAVE, how="left")
     canon = lambda c: pl.col(c).str.split("; ").list.sort().list.join("; ")
     d = j.filter(~((canon("Lateral") == canon("trasladar_desde")) | (pl.col("Lateral").is_null() & pl.col("trasladar_desde").is_null())))

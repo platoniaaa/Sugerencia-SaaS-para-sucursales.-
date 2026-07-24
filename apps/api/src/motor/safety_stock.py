@@ -2,7 +2,8 @@
 
 SS = ROUND(Z * sigma * sqrt((LT_efectivo + CO) / 22), 0)
 - Z por clase (agregada si es CD, local si no); reducido para importado-desde-CD.
-- CO = 3 si se abastece del CD, 5 si no.
+- CO = ciclo de orden = 5 días, tanto compra directa como abastecido del CD
+  (antes 3 vía CD; unificado a 5 el 24-jul-2026 por decisión de Abastecimiento).
 - sigma = desviación estándar mensual (winsorizada).
 Redondeo comercial (half away from zero) como DAX, no bancario.
 """

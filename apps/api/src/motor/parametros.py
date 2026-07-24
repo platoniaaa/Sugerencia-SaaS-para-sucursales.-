@@ -91,7 +91,11 @@ DIAS_HABILES_MES = 22
 # --- Ciclo de orden y lead time -------------------------------------------------
 
 CICLO_ORDEN_DIAS = 5          # compra directa al proveedor
-CICLO_ORDEN_DIAS_CD = 3       # cuando la sucursal se abastece del CD
+# Antes 3. Cambiado a 5 por decision de Abastecimiento (Marilyn Ramos, 24-jul-2026):
+# "en ambos debe ser 5". El ciclo de orden ahora es 5 dias tanto en compra directa
+# como cuando la sucursal se abastece del CD. Diverge a proposito del modelo DAX
+# viejo (que usaba 3 via CD); el motor es la fuente de verdad desde el 22-jul.
+CICLO_ORDEN_DIAS_CD = 5       # antes 3; unificado a 5 (ver nota arriba)
 LT_FALLBACK_DIAS = 8          # sin proveedor o sin historial de OC
 
 # --- Cálculo del lead time por proveedor desde el seguimiento (OC -> P/E) --------
