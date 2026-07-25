@@ -132,6 +132,15 @@ def aplicar_config(cfg: dict) -> None:
         P.TRANSITO_VENTANA_NACIONAL_DIAS = int(cfg["transito_nacional_dias"])
     if "transito_importado_dias" in cfg:
         P.TRANSITO_VENTANA_IMPORTADO_DIAS = int(cfg["transito_importado_dias"])
+    for clave, attr in (
+        ("abc_umbral_a_m6", "ABC_UMBRAL_A_M6"),
+        ("abc_umbral_b_m6", "ABC_UMBRAL_B_M6"),
+        ("abc_umbral_c_m6", "ABC_UMBRAL_C_M6"),
+        ("abc_umbral_c_m3", "ABC_UMBRAL_C_M3"),
+        ("abc_umbral_c_m12", "ABC_UMBRAL_C_M12"),
+    ):
+        if clave in cfg:
+            setattr(P, attr, int(cfg[clave]))
     origen = "default" if cfg.get("es_default") else f"editada por {cfg.get('creado_por')}"
     print(
         f"  config del modelo: ciclo {P.CICLO_ORDEN_DIAS}/{P.CICLO_ORDEN_DIAS_CD} dias, "

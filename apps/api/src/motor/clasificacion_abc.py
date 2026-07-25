@@ -125,11 +125,16 @@ def calcular_abc(
     abc = abc.join(agg_df, on=agg, how="left")
 
     def switch_expr(m3, m6, m12):
+        # Umbrales calibrables (P.ABC_*): por defecto los del modelo DAX auditado.
         return (
-            pl.when(pl.col(m6) >= 5).then(pl.lit("A"))
-            .when(pl.col(m6) == 4).then(pl.lit("B"))
-            .when((pl.col(m6) == 3) & (pl.col(m3) >= 2)).then(pl.lit("C"))
-            .when((pl.col(m12) > 6) & (pl.col(m6) == 3) & (pl.col(m3) < 2)).then(pl.lit("C"))
+            pl.when(pl.col(m6) >= P.ABC_UMBRAL_A_M6).then(pl.lit("A"))
+            .when(pl.col(m6) == P.ABC_UMBRAL_B_M6).then(pl.lit("B"))
+            .when((pl.col(m6) == P.ABC_UMBRAL_C_M6) & (pl.col(m3) >= P.ABC_UMBRAL_C_M3)).then(pl.lit("C"))
+            .when(
+                (pl.col(m12) > P.ABC_UMBRAL_C_M12)
+                & (pl.col(m6) == P.ABC_UMBRAL_C_M6)
+                & (pl.col(m3) < P.ABC_UMBRAL_C_M3)
+            ).then(pl.lit("C"))
             .otherwise(pl.lit("D"))
         )
 

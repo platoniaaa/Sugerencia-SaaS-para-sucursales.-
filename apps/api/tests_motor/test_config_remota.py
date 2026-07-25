@@ -13,7 +13,9 @@ def parametros_intactos():
         for k in ("CICLO_ORDEN_DIAS", "CICLO_ORDEN_DIAS_CD", "Z_POR_CLASE",
                   "Z_IMPORTADO_CD", "LT_FALLBACK_DIAS", "WINSOR_K",
                   "DIAS_HABILES_MES", "LT_CD_RM", "LT_CD_RESTO", "LT_TOPE_DIAS",
-                  "TRANSITO_VENTANA_NACIONAL_DIAS", "TRANSITO_VENTANA_IMPORTADO_DIAS")
+                  "TRANSITO_VENTANA_NACIONAL_DIAS", "TRANSITO_VENTANA_IMPORTADO_DIAS",
+                  "ABC_UMBRAL_A_M6", "ABC_UMBRAL_B_M6", "ABC_UMBRAL_C_M6",
+                  "ABC_UMBRAL_C_M3", "ABC_UMBRAL_C_M12")
     }
     yield
     for k, v in snap.items():
@@ -67,3 +69,19 @@ def test_sin_credenciales_obtener_config_devuelve_none(monkeypatch):
     """Sin credenciales no revienta: devuelve None y el motor usa las constantes."""
     monkeypatch.setattr(job, "_credenciales", lambda: ("http://x", None, None))
     assert job.obtener_config() is None
+
+
+def test_aplicar_config_umbrales_abc(parametros_intactos):
+    """Los umbrales de clasificacion son la perilla mas potente: mueven de clase."""
+    from src.motor.clasificacion_abc import P as Pabc  # mismo modulo parametros
+
+    job.aplicar_config({
+        "abc_umbral_a_m6": 4, "abc_umbral_b_m6": 3, "abc_umbral_c_m6": 2,
+        "abc_umbral_c_m3": 1, "abc_umbral_c_m12": 4, "es_default": False,
+    })
+    assert (P.ABC_UMBRAL_A_M6, P.ABC_UMBRAL_B_M6, P.ABC_UMBRAL_C_M6) == (4, 3, 2)
+    assert (P.ABC_UMBRAL_C_M3, P.ABC_UMBRAL_C_M12) == (1, 4)
+    # El modulo de clasificacion ve los mismos valores (lee P.X en runtime).
+    assert Pabc.ABC_UMBRAL_A_M6 == 4
+    # Y la funcion de clasificacion los respeta: con m6=4 ahora es A (antes B).
+    assert P.clasificar_abc(m3=0, m6=4, m12=4) == "A"

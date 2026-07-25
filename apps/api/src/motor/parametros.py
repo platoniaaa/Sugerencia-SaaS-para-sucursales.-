@@ -56,15 +56,26 @@ SUCURSAL_LINDEROS_MOVIL = "LINDEROS VTA MOVIL"
 VENTANA_M3, VENTANA_M6, VENTANA_M12 = 3, 6, 12
 
 
+# Umbrales de la clasificacion (meses CON venta que hacen falta para cada clase).
+# Son la perilla mas potente del modelo: mueven de clase a los productos y con eso
+# cambian ventana de demanda, nivel de servicio y quien compra. Calibrables desde
+# la plataforma; los valores por defecto son los del modelo DAX auditado.
+ABC_UMBRAL_A_M6 = 5   # m6 >= esto  -> A
+ABC_UMBRAL_B_M6 = 4   # m6 == esto  -> B
+ABC_UMBRAL_C_M6 = 3   # m6 == esto  -> candidato a C
+ABC_UMBRAL_C_M3 = 2   # ... y m3 >= esto -> C
+ABC_UMBRAL_C_M12 = 6  # o m12 > esto (con m3 por debajo del anterior) -> C
+
+
 def clasificar_abc(m3: int, m6: int, m12: int) -> str:
     """SWITCH exacto del modelo DAX (aplica igual a clase local y agregada)."""
-    if m6 >= 5:
+    if m6 >= ABC_UMBRAL_A_M6:
         return "A"
-    if m6 == 4:
+    if m6 == ABC_UMBRAL_B_M6:
         return "B"
-    if m6 == 3 and m3 >= 2:
+    if m6 == ABC_UMBRAL_C_M6 and m3 >= ABC_UMBRAL_C_M3:
         return "C"
-    if m12 > 6 and m6 == 3 and m3 < 2:
+    if m12 > ABC_UMBRAL_C_M12 and m6 == ABC_UMBRAL_C_M6 and m3 < ABC_UMBRAL_C_M3:
         return "C"
     return "D"
 
