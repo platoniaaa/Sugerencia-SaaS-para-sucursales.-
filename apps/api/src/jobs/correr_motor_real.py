@@ -119,6 +119,18 @@ def aplicar_config(cfg: dict) -> None:
         P.LT_FALLBACK_DIAS = int(cfg["lead_time_fallback_dias"])
     if "winsor_k" in cfg:
         P.WINSOR_K = float(cfg["winsor_k"])
+    if "dias_habiles_mes" in cfg:
+        P.DIAS_HABILES_MES = int(cfg["dias_habiles_mes"])
+    if "lt_cd_rm_dias" in cfg:
+        P.LT_CD_RM = int(cfg["lt_cd_rm_dias"])
+    if "lt_cd_resto_dias" in cfg:
+        P.LT_CD_RESTO = int(cfg["lt_cd_resto_dias"])
+    if "lt_tope_dias" in cfg:
+        P.LT_TOPE_DIAS = int(cfg["lt_tope_dias"])
+    if "transito_nacional_dias" in cfg:
+        P.TRANSITO_VENTANA_NACIONAL_DIAS = int(cfg["transito_nacional_dias"])
+    if "transito_importado_dias" in cfg:
+        P.TRANSITO_VENTANA_IMPORTADO_DIAS = int(cfg["transito_importado_dias"])
     origen = "default" if cfg.get("es_default") else f"editada por {cfg.get('creado_por')}"
     print(
         f"  config del modelo: ciclo {P.CICLO_ORDEN_DIAS}/{P.CICLO_ORDEN_DIAS_CD} dias, "

@@ -119,12 +119,13 @@ def calcular_lead_time(
     reg = dim_sucursal.select(["SucursalID", "Region"])
     r = r.join(reg, left_on="sucursal_final", right_on="SucursalID", how="left")
     r = r.with_columns(
-        pl.when(pl.col("sucursal_final") == "TALCA (2)").then(2)
-        .when(pl.col("sucursal_final") == "DIEZ DE JULIO (2)").then(1)
-        .when(pl.col("sucursal_final") == "LINDEROS VTA MOVIL").then(1)
-        .when(pl.col("Region") == "RM").then(1)
-        .when(pl.col("Region").is_not_null()).then(2)
-        .otherwise(2)
+        # Casos especiales fijos; el resto por region (RM vs resto) es calibrable.
+        pl.when(pl.col("sucursal_final") == "TALCA (2)").then(P.LT_CD_RESTO)
+        .when(pl.col("sucursal_final") == "DIEZ DE JULIO (2)").then(P.LT_CD_RM)
+        .when(pl.col("sucursal_final") == "LINDEROS VTA MOVIL").then(P.LT_CD_RM)
+        .when(pl.col("Region") == "RM").then(P.LT_CD_RM)
+        .when(pl.col("Region").is_not_null()).then(P.LT_CD_RESTO)
+        .otherwise(P.LT_CD_RESTO)
         .alias("lt_cd_a_sucursal_dias")
     )
 

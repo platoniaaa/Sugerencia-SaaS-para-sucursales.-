@@ -11,7 +11,9 @@ def parametros_intactos():
     snap = {
         k: getattr(P, k)
         for k in ("CICLO_ORDEN_DIAS", "CICLO_ORDEN_DIAS_CD", "Z_POR_CLASE",
-                  "Z_IMPORTADO_CD", "LT_FALLBACK_DIAS", "WINSOR_K")
+                  "Z_IMPORTADO_CD", "LT_FALLBACK_DIAS", "WINSOR_K",
+                  "DIAS_HABILES_MES", "LT_CD_RM", "LT_CD_RESTO", "LT_TOPE_DIAS",
+                  "TRANSITO_VENTANA_NACIONAL_DIAS", "TRANSITO_VENTANA_IMPORTADO_DIAS")
     }
     yield
     for k, v in snap.items():
@@ -33,6 +35,24 @@ def test_aplicar_config_sobrescribe_los_parametros(parametros_intactos):
     assert P.Z_POR_CLASE == {"A": 2.0, "B": 1.5, "C": 1.0, "D": 0.0}
     assert P.Z_IMPORTADO_CD == {"A": 1.5, "B": 1.2}
     assert P.LT_FALLBACK_DIAS == 10 and P.WINSOR_K == 2.5
+
+
+def test_aplicar_config_perillas_lead_time_y_transito(parametros_intactos):
+    """Las perillas del modulo Lead time / transito tambien se aplican."""
+    job.aplicar_config({
+        "dias_habiles_mes": 20,
+        "lt_cd_rm_dias": 2,
+        "lt_cd_resto_dias": 3,
+        "lt_tope_dias": 45,
+        "transito_nacional_dias": 40,
+        "transito_importado_dias": 200,
+        "es_default": False,
+    })
+    assert P.DIAS_HABILES_MES == 20
+    assert P.LT_CD_RM == 2 and P.LT_CD_RESTO == 3
+    assert P.LT_TOPE_DIAS == 45
+    assert P.TRANSITO_VENTANA_NACIONAL_DIAS == 40
+    assert P.TRANSITO_VENTANA_IMPORTADO_DIAS == 200
 
 
 def test_aplicar_config_solo_toca_lo_que_viene(parametros_intactos):

@@ -76,15 +76,15 @@ def _stock_transito(seg: pl.DataFrame, hoy: date) -> pl.DataFrame:
         (estado_oc == "pendiente")
         & pl.col("FechaOC").is_not_null()
         & (
-            ((origen == "curifor nacional") & (motivo == P.MOTIVO_REPOSICION) & (dias_oc <= 30))
-            | ((origen == "curifor importado") & (dias_oc <= 180))
+            ((origen == "curifor nacional") & (motivo == P.MOTIVO_REPOSICION) & (dias_oc <= P.TRANSITO_VENTANA_NACIONAL_DIAS))
+            | ((origen == "curifor importado") & (dias_oc <= P.TRANSITO_VENTANA_IMPORTADO_DIAS))
         )
     )
     frontera = (
         (origen == "frontera nacional")
         & (estado_doc == "pendiente")
         & pl.col("FechaDoc").is_not_null()
-        & (dias_doc <= 30)
+        & (dias_doc <= P.TRANSITO_VENTANA_NACIONAL_DIAS)
     )
 
     vigente = seg.filter(curifor | frontera)  # orígenes disjuntos: unión == suma de ambas ramas
