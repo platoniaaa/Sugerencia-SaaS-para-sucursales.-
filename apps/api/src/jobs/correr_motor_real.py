@@ -47,6 +47,7 @@ from ..motor import fuentes as _fuentes  # noqa: E402
 CRUDOS_DIR = _fuentes.CRUDOS_DIR
 SNAPSHOT_DIR = Path(os.environ.get("MOTOR_SNAPSHOT_DIR", _API_DIR / "data" / "paridad"))
 SALIDA = _API_DIR / "data" / "sugerido_motor.csv"
+SALIDA_LT = _API_DIR / "data" / "lead_time_motor.csv"
 
 
 def _leer_env() -> dict[str, str]:
@@ -217,7 +218,78 @@ def construir_csv(hoy: date | None = None) -> Path:
     )
     df = pipeline.ejecutar(fuentes, fin_mes_cerrado=_fin_mes_cerrado(hoy), hoy=hoy)
     SALIDA.parent.mkdir(parents=True, exist_ok=True)
+    # El lead time calculado se guarda aparte para publicarlo a la plataforma: es
+    # el "por que" detras del sugerido (de donde sale el LT de cada proveedor y con
+    # cuantas muestras), y se mira cuando un sugerido se ve raro.
+    _guardar_lead_time(fuentes)
     return pipeline.exportar_csv(df, SALIDA)
+
+
+def _guardar_lead_time(fuentes: dict) -> Path | None:
+    """Escribe el lead time por proveedor (global) y por proveedor x sucursal."""
+    import polars as pl
+
+    from ..motor.lead_time_proveedor import (
+        calcular_lead_time_proveedor,
+        calcular_lead_time_proveedor_sucursal,
+    )
+
+    seg = fuentes.get("seguimiento_lt")
+    if seg is None:
+        return None
+    glob = calcular_lead_time_proveedor(seg).select(
+        pl.col("Razon Social Proveedor").alias("proveedor"),
+        pl.lit(None, dtype=pl.Utf8).alias("sucursal_id"),
+        pl.col("Lead Time Dias").alias("lead_time_dias"),
+        pl.lit(None, dtype=pl.Int64).alias("n_muestras"),
+    )
+    suc = calcular_lead_time_proveedor_sucursal(seg).select(
+        pl.col("Razon Social Proveedor").alias("proveedor"),
+        pl.col("SucursalID").alias("sucursal_id"),
+        pl.col("Lead Time Dias").alias("lead_time_dias"),
+        pl.col("N Muestras").cast(pl.Int64).alias("n_muestras"),
+    )
+    pl.concat([glob, suc]).write_csv(SALIDA_LT)
+    return SALIDA_LT
+
+
+def publicar_lead_time() -> dict | None:
+    """Sube a la plataforma el lead time calculado (reemplaza la foto vigente)."""
+    import csv
+
+    import httpx
+
+    if not SALIDA_LT.exists():
+        return None
+    base, email, password = _credenciales()
+    if not email or not password:
+        return None
+    with open(SALIDA_LT, encoding="utf-8", newline="") as f:
+        filas = [
+            {
+                "proveedor": r["proveedor"],
+                "sucursal_id": r["sucursal_id"] or None,
+                "lead_time_dias": float(r["lead_time_dias"]),
+                "n_muestras": int(r["n_muestras"]) if r["n_muestras"] else None,
+            }
+            for r in csv.DictReader(f)
+            if r.get("proveedor") and r.get("lead_time_dias")
+        ]
+    try:
+        with httpx.Client(timeout=120) as c:
+            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
+            r.raise_for_status()
+            token = r.json()["token"]
+            r = c.post(
+                f"{base}/api/admin/lead-time-proveedor",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"filas": filas},
+            )
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:  # noqa: BLE001 - publicar el LT nunca debe romper la carga
+        print(f"  (no se pudo publicar el lead time: {e})")
+        return None
 
 
 def enviar(csv_path: Path, oficial: bool = False) -> dict:
@@ -316,6 +388,10 @@ def run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
         print(f"CARGA OFICIAL: {resultado.get('filas_cargadas')} filas.")
         for a in resultado.get("advertencias", []):
             print(f"  advertencia: {a}")
+        # El detalle del lead time calculado, para verlo en Calibracion.
+        lt = publicar_lead_time()
+        if lt:
+            print(f"  lead time publicado: {lt.get('filas_cargadas')} filas.")
     else:
         print(
             f"SOMBRA: paridad {resultado['paridad_pct']}% "
