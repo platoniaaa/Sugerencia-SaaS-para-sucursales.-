@@ -61,7 +61,8 @@ def leer_stock(ruta_excel: str | Path) -> pl.DataFrame:
     promover encabezados + SucursalID = SWITCH(Bodega) case-insensitive.
 
     De aquí salen a la vez `stock`/`stock_frontera` (Producto, SucursalID, Stock)
-    y `costo` (Producto, Costo)."""
+    y `costo` (Producto, Costo). Se conserva `Bodega` en la salida: la plataforma
+    muestra el stock desglosado por bodega en la ficha del catálogo."""
     import openpyxl  # import perezoso: solo se necesita al leer Excel
 
     wb = openpyxl.load_workbook(ruta_excel, read_only=True, data_only=True)
@@ -103,7 +104,13 @@ def leer_stock(ruta_excel: str | Path) -> pl.DataFrame:
         pl.col("Bodega").fill_null("").str.to_lowercase()
         .replace_strict(_BODEGA_LOWER, default=STOCK_SUCURSAL_DEFAULT)
         .alias("SucursalID")
-    ).select(["Producto", "SucursalID", pl.col("Stock").cast(pl.Float64, strict=False).cast(pl.Int64), "Costo"])
+    ).select([
+        "Producto",
+        "Bodega",
+        "SucursalID",
+        pl.col("Stock").cast(pl.Float64, strict=False).cast(pl.Int64),
+        "Costo",
+    ])
 
 
 def _seguimiento_desde_excel(
@@ -193,6 +200,12 @@ def cargar_fuentes_reales(
     fuentes: dict[str, pl.DataFrame] = {
         "stock": stock.select(["Producto", "SucursalID", "Stock"]),
         "stock_frontera": stock_frontera.select(["Producto", "SucursalID", "Stock"]),
+        # Con la bodega y la empresa: el pipeline no las usa (agrega por sucursal),
+        # pero la plataforma publica este desglose en la ficha del catalogo.
+        "stock_bodegas": stock.select(["Producto", "Bodega", "SucursalID", "Stock"]),
+        "stock_bodegas_frontera": stock_frontera.select(
+            ["Producto", "Bodega", "SucursalID", "Stock"]
+        ),
         # Costo: del Excel de stock Curifor (columna Costo, como el modelo).
         "costo": stock.select(["Producto", pl.col("Costo").cast(pl.Utf8)]),
         # 'Dim Sucursal' es una DATATABLE escrita a mano dentro del modelo: no viene

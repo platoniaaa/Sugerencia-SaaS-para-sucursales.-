@@ -48,6 +48,7 @@ CRUDOS_DIR = _fuentes.CRUDOS_DIR
 SNAPSHOT_DIR = Path(os.environ.get("MOTOR_SNAPSHOT_DIR", _API_DIR / "data" / "paridad"))
 SALIDA = _API_DIR / "data" / "sugerido_motor.csv"
 SALIDA_LT = _API_DIR / "data" / "lead_time_motor.csv"
+SALIDA_STOCK = _API_DIR / "data" / "stock_unificado_motor.csv"
 
 
 def _leer_env() -> dict[str, str]:
@@ -231,7 +232,75 @@ def construir_csv(hoy: date | None = None) -> Path:
     # el "por que" detras del sugerido (de donde sale el LT de cada proveedor y con
     # cuantas muestras), y se mira cuando un sugerido se ve raro.
     _guardar_lead_time(fuentes)
+    # El stock por bodega: la plataforma lo muestra en la ficha del catalogo. Antes
+    # esa tabla la llenaba el Power BI Desktop y al retirarlo quedo congelada.
+    _guardar_stock_unificado(fuentes)
     return pipeline.exportar_csv(df, SALIDA)
+
+
+def _guardar_stock_unificado(fuentes: dict) -> Path | None:
+    """Escribe el stock por producto x bodega de las dos empresas, con su origen."""
+    import polars as pl
+
+    partes = []
+    for clave, origen in (("stock_bodegas", "CURIFOR"), ("stock_bodegas_frontera", "FRONTERA")):
+        df = fuentes.get(clave)
+        if df is None or df.is_empty():
+            continue
+        partes.append(
+            df.select(
+                pl.col("Producto").alias("producto"),
+                pl.col("Bodega").alias("bodega"),
+                pl.col("SucursalID").alias("sucursal_id"),
+                pl.col("Stock").cast(pl.Float64).alias("stock"),
+                pl.lit(origen).alias("origen"),
+            )
+        )
+    if not partes:
+        return None
+    # Sin filas en cero: no aportan nada al catalogo y son la mayoria del archivo.
+    pl.concat(partes).filter(pl.col("stock") != 0).write_csv(SALIDA_STOCK)
+    return SALIDA_STOCK
+
+
+def publicar_stock_unificado() -> dict | None:
+    """Sube a la plataforma el stock por bodega (reemplaza la foto vigente)."""
+    import csv
+
+    import httpx
+
+    if not SALIDA_STOCK.exists():
+        return None
+    base, email, password = _credenciales()
+    if not email or not password:
+        return None
+    with open(SALIDA_STOCK, encoding="utf-8", newline="") as f:
+        filas = [
+            {
+                "producto": r["producto"],
+                "bodega": r["bodega"] or None,
+                "sucursal_id": r["sucursal_id"] or None,
+                "stock": float(r["stock"]),
+                "origen": r["origen"] or None,
+            }
+            for r in csv.DictReader(f)
+            if r.get("producto")
+        ]
+    try:
+        with httpx.Client(timeout=300) as c:
+            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
+            r.raise_for_status()
+            token = r.json()["token"]
+            r = c.post(
+                f"{base}/api/admin/stock-unificado",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"filas": filas},
+            )
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:  # noqa: BLE001 - publicar el stock nunca debe romper la carga
+        print(f"  (no se pudo publicar el stock: {e})")
+        return None
 
 
 def _guardar_lead_time(fuentes: dict) -> Path | None:
@@ -401,6 +470,10 @@ def run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
         lt = publicar_lead_time()
         if lt:
             print(f"  lead time publicado: {lt.get('filas_cargadas')} filas.")
+        # El stock por bodega, para la ficha del catalogo.
+        stk = publicar_stock_unificado()
+        if stk:
+            print(f"  stock publicado: {stk.get('filas_cargadas')} filas.")
     else:
         print(
             f"SOMBRA: paridad {resultado['paridad_pct']}% "
