@@ -31,16 +31,28 @@ from pathlib import Path
 import polars as pl
 
 # --- Bodega -> SucursalID (SWITCH de 'Stock Bodegas'[SucursalID], case-insensitive) ---
+#
+# Las claves salen del SWITCH del modelo DAX, que se escribió mirando el Excel de
+# CURIFOR. El de FRONTERA nombra algunas bodegas distinto (un espacio de por medio)
+# y esas caían en DESCONOCIDO: su stock no contaba para ninguna sucursal. Las
+# variantes de Frontera van marcadas abajo.
 STOCK_BODEGA_SUCURSAL = {
     "AUTOPARK": "AUTOPARK", "BDGA. GRAN AVENIDA": "GRAN AVENIDA",
     "BODEGA DAÑADOS": "BODEGA DANADOS", "BODEGA DAÃ'ADOS": "BODEGA DANADOS",
+    # Mismo nombre, otra corrupción de la Ñ al exportar (mojibake distinto).
+    "BODEGA DAÃ‘ADOS": "BODEGA DANADOS",
     "BODEGA DEVOLUCION": "BODEGA DEVOLUCION", "BODEGA DYP CHILLAN V": "CHILLAN VIEJO",
     "BODEGA DYP CURICO": "CURICO", "BODEGA DYP PLACILLA": "PLACILLA",
     "BODEGA DYP TALCA": "TALCA", "BODEGA DYP TALCA 2": "TALCA (2)",
     "BODEGA IMPORTACION": "BODEGA IMPORTACION", "BODEGA ML": "CD REPUESTOS",
     "BODEGA ML-FULL": "CD REPUESTOS", "BODEGA SCRAP": "BODEGA SCRAP",
     "BRASIL 18": "BRASIL 18", "CD REPUESTOS": "CD REPUESTOS", "CHILLAN": "CHILLAN",
-    "CHILLAN2": "CHILLAN VIEJO", "COMEX": "COMEX", "CURICO": "CURICO",
+    "CHILLAN2": "CHILLAN VIEJO",
+    # Frontera la escribe con espacio.
+    "CHILLAN 2": "CHILLAN VIEJO",
+    # Solo existe en Frontera; es su propia sucursal, como AUTOPARK o COMEX.
+    "CASA MATRIZ": "CASA MATRIZ",
+    "COMEX": "COMEX", "CURICO": "CURICO",
     "DIEZ DE JULIO": "DIEZ DE JULIO", "DIEZ DE JULIO (2)": "DIEZ DE JULIO (2)",
     "IMPORTACION MOTOS": "IMPORTACION MOTOS", "LA FLORIDA": "LA FLORIDA",
     "LINDEROS": "LINDEROS", "LO BLANCO": "LO BLANCO", "LO BLANCO 2": "LO BLANCO",
@@ -48,7 +60,10 @@ STOCK_BODEGA_SUCURSAL = {
     "OVALLE": "OVALLE", "PE X REGULARIZAR": "PE X REGULARIZAR", "PE-FALTANTE": "PE FALTANTE",
     "PLACILLA": "PLACILLA", "RANCAGUA": "RANCAGUA", "RANCAGUA 2": "RANCAGUA",
     "RANCAGUA 3": "RANCAGUA", "ST_RANCAGUA": "RANCAGUA", "TALCA": "TALCA",
-    "TALCA (2)": "TALCA (2)", "TALCA BMW": "TALCA", "TRANSITO": "TRANSITO",
+    "TALCA (2)": "TALCA (2)",
+    # Frontera la escribe sin el espacio antes del parentesis.
+    "TALCA(2)": "TALCA (2)",
+    "TALCA BMW": "TALCA", "TRANSITO": "TRANSITO",
 }
 _BODEGA_LOWER = {k.lower(): v for k, v in STOCK_BODEGA_SUCURSAL.items()}
 STOCK_SUCURSAL_DEFAULT = "DESCONOCIDO"
