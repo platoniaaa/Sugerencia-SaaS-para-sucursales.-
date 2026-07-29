@@ -84,9 +84,26 @@ FUENTES: dict[str, FuenteSpec] = {
     "mix_reemplazos": FuenteSpec(["*mix*", "*reemplaz*"], excluye=["*~*"], header_row=1),
     # Listado maestro de repuestos: de aqui sale la Categoria que excluye COLISION
     # y CAMPANAS del sugerido. El export real se llama "lista rep (lista precios)".
+    # OJO con el patron "*lista*precio*": desde jul-2026 hay listas de precios de
+    # PROVEEDOR en la carpeta ("Lista de precio ford al 28.07.2026.xlsx") que lo
+    # matchean y, siendo mas nuevas, ganaban el desempate por fecha. El motor leia
+    # la lista de precios como listado maestro y el job diario se caia en
+    # `leer_listado_maestro` (que espera un CSV con Producto y Categoria).
     "catalogo": FuenteSpec(
         ["*maestro*", "*listado*maestro*", "*lista*rep*", "*lista*precio*"],
-        excluye=["*stock*", "*venta*", "*seguimiento*"],
+        excluye=["*stock*", "*venta*", "*seguimiento*",
+                 "*precio*ford*", "*precio*gildemeister*"],
+    ),
+    # Listas de precios de proveedor. NO alimentan el sugerido: dan el precio de
+    # venta para calcular el margen y priorizar que comprar.
+    # Tienen que estar declaradas aunque nada las lea todavia: `es_de_alguna_fuente`
+    # identifica los respaldos de venta POR DESCARTE, y estos dos archivos traen
+    # "2026" en el nombre, asi que sin una fuente propia se leerian como ventas.
+    "precios_ford": FuenteSpec(
+        ["*precio*ford*", "*ford*precio*"], excluye=["*gildemeister*"], hoja="Precios"
+    ),
+    "precios_gildemeister": FuenteSpec(
+        ["*precio*gildemeister*", "*gildemeister*precio*"], excluye=["*ford*"], hoja="Precios"
     ),
     "dim_sucursal": FuenteSpec(
         ["*sucursal*", "*dim*local*"], excluye=["*seguimiento*", "*stock*", "*venta*"]

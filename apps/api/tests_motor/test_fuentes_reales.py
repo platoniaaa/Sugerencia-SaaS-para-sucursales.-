@@ -34,7 +34,9 @@ def test_leer_stock_mapea_sucursal(tmp_path):
         ["P6", "d", "UNIDAD", 2, None, 100],                  # nula -> DESCONOCIDO
     ])
     df = FR.leer_stock(ruta)
-    assert df.columns == ["Producto", "SucursalID", "Stock", "Costo"]
+    # `Bodega` se conserva desde jul-2026: la plataforma muestra el stock por
+    # bodega en la ficha del catalogo, no solo agregado por sucursal.
+    assert df.columns == ["Producto", "Bodega", "SucursalID", "Stock", "Costo"]
     m = {r["Producto"]: r["SucursalID"] for r in df.to_dicts()}
     assert m["P1"] == "CD REPUESTOS"
     assert m["P2"] == "TALCA (2)"
