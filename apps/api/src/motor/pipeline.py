@@ -263,6 +263,36 @@ def ejecutar(
     else:
         r = r.with_columns(pl.lit(None, dtype=pl.Float64).alias("costo_unitario"))
 
+    # --- Listas de precios de proveedor (precio de VENTA, para el margen) ---
+    # Se cruzan por `clave_precio`: el codigo de Curifor trae un prefijo numerico
+    # ("25 DG9Z8100A") y las listas usan el del fabricante con su propio formato
+    # ("DG9Z/8100/A/"); normalizados caen en la misma clave. Se cruza contra el
+    # producto MASTER, igual que el catalogo y el costo.
+    from .lectores_excel import (
+        COLUMNAS_PRECIOS_FORD,
+        COLUMNAS_PRECIOS_GILDEMEISTER,
+        clave_precio,
+    )
+
+    columnas_precio = list(COLUMNAS_PRECIOS_FORD.values()) + list(
+        COLUMNAS_PRECIOS_GILDEMEISTER.values()
+    )
+    r = r.with_columns(
+        pl.col("producto_master")
+        .map_elements(clave_precio, return_dtype=pl.Utf8)
+        .alias("clave_precio")
+    )
+    for clave in ("precios_ford", "precios_gildemeister"):
+        lista = fuentes.get(clave)
+        if lista is not None and not lista.is_empty():
+            r = r.join(lista, on="clave_precio", how="left")
+    # Las que no vinieron quedan vacias, para que el contrato no cambie de forma
+    # segun que listas haya en la carpeta.
+    faltantes = [c for c in columnas_precio if c not in r.columns]
+    if faltantes:
+        r = r.with_columns([pl.lit(None, dtype=pl.Float64).alias(c) for c in faltantes])
+    r = r.drop("clave_precio")
+
     # Valor Sugerido CLP = Sugerido * Costo (solo si sugerido>0 y hay costo).
     r = r.with_columns(
         pl.when((pl.col("sugerido") > 0) & pl.col("costo_unitario").is_not_null())
@@ -319,6 +349,20 @@ _CONTRATO: list[tuple[str, str]] = [
     ("comprar_en_el_cd", "comprar_en_cd"),
     ("pedir_flag", "pedir"),
     ("trasladar_desde", "trasladar_desde"),
+    # Precios de las listas de proveedor. Los nombres son los que ya espera
+    # `excel_loader.HEADER_ALIASES` de la plataforma; con ellos revive el margen,
+    # que quedo en blanco cuando el motor reemplazo al Power BI (jul-2026).
+    ("precio_dealer_ford", "precio_dealer_ford"),
+    ("precio_publico_ford", "precio_publico_ford"),
+    ("precio_publico_iva_ford", "precio_publico_iva_ford"),
+    ("precio_reposicion_ford", "precio_reposicion_ford"),
+    ("precio_urgente_vor_ford", "precio_urgente_vor_ford"),
+    ("precio_promociones_ford", "precio_promociones_ford"),
+    ("precio_urgente_recargo15_ford", "precio_urgente_recargo15_ford"),
+    ("precio_flota_ford", "precio_flota_ford"),
+    ("precio_sugerido_gilde", "precio_sugerido_gilde"),
+    ("precio_dealer_gilde", "precio_dealer_gilde"),
+    ("precio_final_dealer_gilde", "precio_final_dealer_gilde"),
 ]
 
 

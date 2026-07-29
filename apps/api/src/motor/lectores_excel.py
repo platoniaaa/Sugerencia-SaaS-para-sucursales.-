@@ -22,6 +22,7 @@ Particularidades de estos reportes (verificadas contra los archivos reales del
 from __future__ import annotations
 
 import datetime as dt
+import re
 import unicodedata
 from collections.abc import Iterable, Mapping
 from pathlib import Path
@@ -406,3 +407,86 @@ COLUMNAS_MIX = {
 def leer_mix_reemplazos(ruta: str | Path) -> pl.DataFrame:
     """'mix andres' -> Producto, Reem1, Reem2, Reem3 (base de los grupos de reemplazo)."""
     return leer_reporte(ruta, COLUMNAS_MIX, hoja="Hoja2", obligatorias=["Producto", "Reem1"])
+
+
+# --- Listas de precios de proveedor -------------------------------------------
+# No alimentan el sugerido: dan el precio de VENTA para calcular el margen y poder
+# priorizar que comprar. Se cruzan con el codigo interno de Curifor, que es
+# "<prefijo numerico> <codigo del fabricante>" ("25 DG9Z8100A"), mientras que las
+# listas traen el codigo del fabricante en su propio formato ("DG9Z/8100/A/").
+
+def clave_precio(codigo: str | None) -> str | None:
+    """Codigo comparable entre las listas y el maestro de Curifor.
+
+    Saca el prefijo numerico de Curifor y deja solo letras y numeros en mayuscula,
+    con lo que "25 DG9Z8100A" y "DG9Z/8100/A/" caen en la misma clave. Sin esto el
+    cruce da 0: FORD separa con barras y Curifor no.
+    """
+    if codigo is None:
+        return None
+    s = str(codigo).strip()
+    if not s:
+        return None
+    m = re.match(r"^\d+\s+(.*)$", s)
+    if m:
+        s = m.group(1)
+    limpio = re.sub(r"[^A-Za-z0-9]", "", s).upper()
+    return limpio or None
+
+
+# Columna de la lista -> columna del contrato de la plataforma.
+COLUMNAS_PRECIOS_FORD = {
+    "Price_dealer": "precio_dealer_ford",
+    "Precio_Publico": "precio_publico_ford",
+    "Precio_Publico_ConImpuestos": "precio_publico_iva_ford",
+    "Reposicion": "precio_reposicion_ford",
+    "Urgente_VOR": "precio_urgente_vor_ford",
+    "Promociones": "precio_promociones_ford",
+    "Urgente_Recargo15": "precio_urgente_recargo15_ford",
+    "Precio_Flota": "precio_flota_ford",
+}
+
+COLUMNAS_PRECIOS_GILDEMEISTER = {
+    "Precio_Sugerido": "precio_sugerido_gilde",
+    "Precio_Dealer": "precio_dealer_gilde",
+    "Precio_Final_Dealer": "precio_final_dealer_gilde",
+}
+
+
+def _leer_precios(ruta: str | Path, col_codigo: str, mapa: dict[str, str]) -> pl.DataFrame:
+    """Hoja 'Precios' de una lista de proveedor -> clave + columnas de precio."""
+    df = pl.read_excel(ruta, sheet_name="Precios")
+    if col_codigo not in df.columns:
+        raise ValueError(
+            f"La lista de precios {Path(ruta).name} no trae la columna {col_codigo!r}. "
+            f"Columnas encontradas: {df.columns[:12]}"
+        )
+    presentes = {k: v for k, v in mapa.items() if k in df.columns}
+    if not presentes:
+        raise ValueError(
+            f"La lista de precios {Path(ruta).name} no trae ninguna columna de precio "
+            f"conocida ({sorted(mapa)}). Columnas encontradas: {df.columns[:12]}"
+        )
+    out = df.select(
+        pl.col(col_codigo).alias("_codigo"),
+        *[pl.col(k).cast(pl.Float64, strict=False).alias(v) for k, v in presentes.items()],
+    ).with_columns(
+        pl.col("_codigo")
+        .map_elements(clave_precio, return_dtype=pl.Utf8)
+        .alias("clave_precio")
+    ).drop("_codigo")
+    # Una clave puede repetirse si dos codigos distintos se normalizan igual; con
+    # el precio mas alto se evita subestimar el margen (y es estable entre corridas).
+    return (
+        out.filter(pl.col("clave_precio").is_not_null())
+        .group_by("clave_precio")
+        .agg([pl.col(c).max() for c in presentes.values()])
+    )
+
+
+def leer_precios_ford(ruta: str | Path) -> pl.DataFrame:
+    return _leer_precios(ruta, "PartNumber", COLUMNAS_PRECIOS_FORD)
+
+
+def leer_precios_gildemeister(ruta: str | Path) -> pl.DataFrame:
+    return _leer_precios(ruta, "Codigo", COLUMNAS_PRECIOS_GILDEMEISTER)

@@ -176,6 +176,8 @@ def cargar_fuentes_reales(
     ventas_frontera_crudo: pl.DataFrame | None = None,
     listado_maestro: str | Path | None = None,
     mix_reemplazos_xlsx: str | Path | None = None,
+    precios_ford_xlsx: str | Path | None = None,
+    precios_gildemeister_xlsx: str | Path | None = None,
     fin_mes_cerrado: date | None = None,
     sql_conn=None,
 ) -> dict[str, pl.DataFrame]:
@@ -322,5 +324,20 @@ def cargar_fuentes_reales(
         fuentes["mapeo"] = dim.calcular_mapeo_master(
             lx.leer_mix_reemplazos(mix_reemplazos_xlsx), ventas_crudo, fin_mes_cerrado
         )
+
+    # Listas de precios de proveedor. Son opcionales y NO afectan al sugerido: solo
+    # llenan las columnas de precio con las que la plataforma calcula el margen.
+    from . import lectores_excel as _lx
+
+    for clave, ruta, leer in (
+        ("precios_ford", precios_ford_xlsx, _lx.leer_precios_ford),
+        ("precios_gildemeister", precios_gildemeister_xlsx, _lx.leer_precios_gildemeister),
+    ):
+        if ruta is None:
+            continue
+        try:
+            fuentes[clave] = leer(ruta)
+        except Exception as e:  # noqa: BLE001 - una lista rota no puede voltear el sugerido
+            print(f"  (no se pudo leer {clave}: {e})")
 
     return fuentes

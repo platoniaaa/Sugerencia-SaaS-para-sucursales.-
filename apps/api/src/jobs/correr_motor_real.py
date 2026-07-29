@@ -224,6 +224,10 @@ def construir_csv(hoy: date | None = None) -> Path:
         # grupos de reemplazo) en vez de leer el snapshot congelado del BI.
         listado_maestro=_buscar("catalogo", obligatorio=False),
         mix_reemplazos_xlsx=_buscar("mix_reemplazos", obligatorio=False),
+        # Listas de precios de proveedor: dan el precio de venta para el margen.
+        # Opcionales; sin ellas esas columnas salen vacias y el resto no cambia.
+        precios_ford_xlsx=_buscar("precios_ford", obligatorio=False),
+        precios_gildemeister_xlsx=_buscar("precios_gildemeister", obligatorio=False),
         fin_mes_cerrado=_fin_mes_cerrado(hoy),
     )
     df = pipeline.ejecutar(fuentes, fin_mes_cerrado=_fin_mes_cerrado(hoy), hoy=hoy)
