@@ -205,6 +205,10 @@ def construir_csv(hoy: date | None = None) -> Path:
     if cfg:
         aplicar_config(cfg)
     ventas = _archivos_de_ventas(_fin_mes_cerrado(hoy))
+    # Se listan en el log a proposito: los respaldos se eligen POR DESCARTE, asi que
+    # un archivo nuevo cualquiera con el ano en el nombre entra aca sin avisar. Ver
+    # la lista es la unica forma barata de cachar que se colo algo que no es venta.
+    print(f"  respaldos de venta: {[p.name for p in ventas] or '(ninguno)'}")
     # Ventas Frontera (E07): opcional, pero sin ellas el motor pierde los combos
     # que solo se venden ahi y subestima la demanda de los que venden en las dos.
     frontera_xlsx = _buscar("ventas_frontera", obligatorio=False)

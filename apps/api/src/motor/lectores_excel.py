@@ -374,24 +374,78 @@ def leer_ventas_frontera_excel(ruta: str | Path) -> pl.DataFrame:
 # --------------------------------------------------------------------------- #
 # Listado maestro de repuestos y base de reemplazos
 # --------------------------------------------------------------------------- #
-def leer_listado_maestro(ruta: str | Path) -> pl.DataFrame:
-    """'Listado Maestro Repuestos' (export de Flexline en CSV) -> Producto, Categoria.
+# Columnas que el motor usa del maestro. Las dos primeras son obligatorias.
+COLS_MAESTRO = ("Producto", "Categoria", "Glosa", "Unidad", "Familia")
 
-    El export viene con `;`, en latin-1 y SIN entrecomillar: hay glosas con comillas
-    sueltas (medidas en pulgadas) que rompen el parser si se interpretan como
-    delimitador de texto, por eso `quote_char=None`.
-    """
-    df = pl.read_csv(
-        ruta, separator=";", encoding="latin-1", quote_char=None, infer_schema_length=0
+# Hojas donde ha vivido el maestro dentro de la planilla de precios, en orden de
+# preferencia. Se comparan normalizadas (sin tildes ni simbolos).
+HOJAS_LISTADO_MAESTRO = ("Lista sin duplicados", "Listado Maestro", "Maestro")
+
+
+def _hoja_maestro(disponibles: list[str], hoja: str | None) -> str | None:
+    """Nombre REAL de la hoja del maestro dentro del libro, o None si no esta."""
+    por_norm = {_norm(n): n for n in disponibles}
+    for candidata in ([hoja] if hoja else HOJAS_LISTADO_MAESTRO):
+        real = por_norm.get(_norm(candidata))
+        if real is not None:
+            return real
+    return None
+
+
+def _leer_maestro_excel(ruta: Path, hoja: str | None) -> pl.DataFrame:
+    import fastexcel  # el motor que usa pl.read_excel; aca se usa para elegir la hoja
+
+    libro = fastexcel.read_excel(str(ruta))
+    elegida = _hoja_maestro(libro.sheet_names, hoja)
+    if elegida is None:
+        raise ValueError(
+            f"{ruta.name} no trae la hoja del listado maestro (se buscaron "
+            f"{list(HOJAS_LISTADO_MAESTRO)}). Hojas del archivo: {libro.sheet_names}. "
+            "Si el archivo no es el maestro, revisa los patrones de la fuente 'catalogo'."
+        )
+    # Se leen SOLO las columnas que el motor usa: la hoja real trae 52 columnas y
+    # 410.000 filas, y pedir las cinco que importan baja la lectura de minutos a
+    # segundos. El sondeo previo (n_rows=0) es para tolerar que falte una opcional.
+    presentes = {c.name for c in libro.load_sheet(elegida, n_rows=0).available_columns()}
+    return pl.read_excel(
+        ruta, sheet_name=elegida, columns=[c for c in COLS_MAESTRO if c in presentes]
     )
+
+
+def leer_listado_maestro(ruta: str | Path, hoja: str | None = None) -> pl.DataFrame:
+    """'Listado Maestro Repuestos' -> Producto, Categoria (+ Glosa, Unidad, Familia).
+
+    De aqui sale la Categoria que deja COLISION y CAMPANAS fuera del sugerido. La
+    fuente ha venido de dos formas y se aceptan las dos:
+
+    - CSV (export de Flexline, "lista rep (lista precios).csv"): viene con `;`, en
+      latin-1 y SIN entrecomillar; hay glosas con comillas sueltas (medidas en
+      pulgadas) que rompen el parser si se interpretan como delimitador de texto,
+      por eso `quote_char=None`.
+    - Excel ("LISTA DE PRECIOS.xlsx", hoja "Lista sin duplicados"): desde jul-2026
+      el maestro dejo de exportarse aparte y vive como una hoja de la planilla de
+      precios de Curifor.
+
+    Todo sale como texto, como salia del CSV con `infer_schema_length=0`: el Excel
+    infiere tipos por columna y aguas abajo se compara y se joinea contra texto.
+    """
+    ruta = Path(ruta)
+    if ruta.suffix.lower() == ".csv":
+        df = pl.read_csv(
+            ruta, separator=";", encoding="latin-1", quote_char=None, infer_schema_length=0
+        )
+    else:
+        df = _leer_maestro_excel(ruta, hoja)
     faltan = {"Producto", "Categoria"} - set(df.columns)
     if faltan:
         raise ValueError(
-            f"El listado maestro {Path(ruta).name} no trae {sorted(faltan)}. "
+            f"El listado maestro {ruta.name} no trae {sorted(faltan)}. "
             f"Columnas encontradas: {df.columns[:12]}"
         )
-    cols = ["Producto", "Categoria"] + [c for c in ("Glosa", "Unidad", "Familia") if c in df.columns]
-    return df.select(cols).with_columns(pl.col("Producto").str.strip_chars())
+    cols = [c for c in COLS_MAESTRO if c in df.columns]
+    return df.select(cols).with_columns(
+        pl.all().cast(pl.Utf8, strict=False)
+    ).with_columns(pl.col("Producto").str.strip_chars())
 
 
 # La Hoja2 del "BASE NUEVO MIX" es la que lee el modelo (no Hoja1, que es una tabla

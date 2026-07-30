@@ -83,31 +83,51 @@ FUENTES: dict[str, FuenteSpec] = {
     # Fuentes menores.
     "mix_reemplazos": FuenteSpec(["*mix*", "*reemplaz*"], excluye=["*~*"], header_row=1),
     # Listado maestro de repuestos: de aqui sale la Categoria que excluye COLISION
-    # y CAMPANAS del sugerido. El export real se llama "lista rep (lista precios)".
-    # OJO con el patron "*lista*precio*": desde jul-2026 hay listas de precios de
-    # PROVEEDOR en la carpeta ("Lista de precio ford al 28.07.2026.xlsx") que lo
-    # matchean y, siendo mas nuevas, ganaban el desempate por fecha. El motor leia
-    # la lista de precios como listado maestro y el job diario se caia en
-    # `leer_listado_maestro` (que espera un CSV con Producto y Categoria).
+    # y CAMPANAS del sugerido. Ha cambiado de forma dos veces:
+    #   hasta jul-2026  export CSV de Flexline, "lista rep (lista precios).csv"
+    #   desde jul-2026  hoja "Lista sin duplicados" de "LISTA DE PRECIOS.xlsx"
+    #
+    # El patron del maestro es EXACTO a proposito. Antes decia "*lista*precio*" y
+    # tambien matcheaba las listas de PROVEEDOR ("Lista de precio ford al
+    # 28.07.2026.xlsx") que, siendo mas nuevas, ganaban el desempate por fecha: el
+    # motor leia una lista de precios como maestro y el job diario se caia. Taparlo
+    # excluyendo proveedor por proveedor es una lista negra que hay que mantener y
+    # que falla con el proximo proveedor; un nombre exacto no.
     "catalogo": FuenteSpec(
-        ["*maestro*", "*listado*maestro*", "*lista*rep*", "*lista*precio*"],
-        excluye=["*stock*", "*venta*", "*seguimiento*",
-                 "*precio*ford*", "*precio*gildemeister*"],
+        ["*maestro*", "*listado*maestro*", "*lista*rep*",
+         "lista de precios.*", "lista de precios curifor.*"],
+        excluye=["*stock*", "*venta*", "*seguimiento*"],
+        hoja="Lista sin duplicados",
     ),
     # Listas de precios de proveedor. NO alimentan el sugerido: dan el precio de
     # venta para calcular el margen y priorizar que comprar.
     # Tienen que estar declaradas aunque nada las lea todavia: `es_de_alguna_fuente`
-    # identifica los respaldos de venta POR DESCARTE, y estos dos archivos traen
-    # "2026" en el nombre, asi que sin una fuente propia se leerian como ventas.
+    # identifica los respaldos de venta POR DESCARTE, y estos archivos traen el ano
+    # en el nombre, asi que sin una fuente propia se leerian como ventas.
     "precios_ford": FuenteSpec(
         ["*precio*ford*", "*ford*precio*"], excluye=["*gildemeister*"], hoja="Precios"
     ),
     "precios_gildemeister": FuenteSpec(
         ["*precio*gildemeister*", "*gildemeister*precio*"], excluye=["*ford*"], hoja="Precios"
     ),
+    # Cajon para CUALQUIER otra lista de precios de proveedor. Nadie la lee: existe
+    # solo para que un proveedor nuevo ("Lista de precio bosch al 30.08.2026.xlsx")
+    # quede reconocido y no caiga por descarte en los respaldos de venta.
+    "precios_proveedor": FuenteSpec(
+        ["*lista*de*precio*"],
+        excluye=["lista de precios.*", "lista de precios curifor.*",
+                 "*maestro*", "*lista*rep*", "*stock*", "*seguimiento*"],
+        hoja="Precios",
+    ),
     "dim_sucursal": FuenteSpec(
         ["*sucursal*", "*dim*local*"], excluye=["*seguimiento*", "*stock*", "*venta*"]
     ),
+    # Pautas de mantencion por marca. Nadie las lee desde el motor (alimentan la
+    # lista InStock, que se arma aparte), pero tienen que estar declaradas: se
+    # llaman "Pauta de mantencion Baic Enero 2026.xlsx" y, sin una fuente propia,
+    # `es_de_alguna_fuente` no las reconocia y caian por descarte en los respaldos
+    # de venta. El 30-07-2026 eso volteo el job diario entero.
+    "pautas_mantencion": FuenteSpec(["*pauta*"]),
 }
 
 
