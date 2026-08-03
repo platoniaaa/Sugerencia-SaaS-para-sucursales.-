@@ -378,6 +378,48 @@ def publicar_lead_time() -> dict | None:
         return None
 
 
+def avisar_falla(motivo: str, detalle: str = "") -> bool:
+    """Deja una incidencia en la plataforma cuando la corrida diaria falla.
+
+    Hasta ago-2026 un fallo solo escribia "RESULTADO: FALLO" en un log local que
+    no lee nadie. La carga estuvo rota del 31-jul al 03-ago (la plataforma
+    devolvia un 500) y el equipo siguio comprando sobre el sugerido del 30-jul
+    sin enterarse. La incidencia ademas dispara la campanita de los admin.
+
+    Devuelve True si el aviso se pudo dejar. Nunca lanza: si la plataforma esta
+    caida no hay nada que hacer, y este aviso jamas debe tapar el error original.
+    """
+    import httpx
+
+    base, email, password = _credenciales()
+    if not email or not password:
+        return False
+    hoy = date.today()
+    try:
+        with httpx.Client(timeout=60) as c:
+            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
+            r.raise_for_status()
+            token = r.json()["token"]
+            r = c.post(
+                f"{base}/api/incidencias",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "titulo": f"La actualizacion del sugerido fallo ({hoy:%d-%m-%Y})",
+                    "descripcion": (
+                        f"{motivo}\n\n{detalle}\n\n"
+                        "El sugerido NO se actualizo: sigue mostrando la carga anterior. "
+                        "Mientras no se corrija, lo que se compre sale de datos viejos."
+                    ).strip(),
+                    "pantalla": "cargar",
+                },
+            )
+            r.raise_for_status()
+            return True
+    except Exception as e:  # noqa: BLE001 - avisar nunca puede romper mas de lo que ya esta roto
+        print(f"  (ademas, no se pudo dejar la incidencia del fallo: {e})")
+        return False
+
+
 def enviar(csv_path: Path, oficial: bool = False) -> dict:
     """Sube el CSV a la plataforma: comparacion (sombra) o carga (oficial)."""
     import httpx
@@ -448,27 +490,35 @@ def run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
     viejos = revisar_frescura()
     for v in viejos:
         print(f"  DESACTUALIZADO: {v}")
-    if viejos and oficial and not ignorar_frescura:
-        print(
-            "\nERROR: no se carga a produccion con archivos desactualizados.\n"
-            "Actualizalos en la carpeta de datos, o usa --ignorar-frescura si "
-            "sabes que asi corresponde.",
-            file=sys.stderr,
-        )
+    # Solo la corrida oficial avisa: el modo sombra es una prueba y ensuciaria
+    # las incidencias del equipo.
+    def _fallar(motivo: str, detalle: str = "") -> int:
+        print(f"ERROR: {motivo}\n{detalle}".rstrip(), file=sys.stderr)
+        if oficial and avisar_falla(motivo, detalle):
+            print("  incidencia dejada en la plataforma (los admin ven la campanita).")
         return 1
+
+    if viejos and oficial and not ignorar_frescura:
+        return _fallar(
+            "No se carga a produccion con archivos desactualizados.",
+            "Archivos vencidos:\n  - " + "\n  - ".join(viejos)
+            + "\n\nActualizalos en la carpeta de datos, o corre con "
+            "--ignorar-frescura si sabes que asi corresponde.",
+        )
 
     try:
         csv_path = construir_csv()
-    except FileNotFoundError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return 1
+    except Exception as e:  # noqa: BLE001
+        return _fallar("El motor no pudo calcular el sugerido.", f"{type(e).__name__}: {e}")
     print(f"CSV generado: {csv_path}")
 
     try:
         resultado = enviar(csv_path, oficial=oficial)
     except Exception as e:  # noqa: BLE001
-        print(f"ERROR al enviar a la plataforma: {e}", file=sys.stderr)
-        return 1
+        return _fallar(
+            "El motor calculo bien, pero la plataforma rechazo la carga.",
+            f"{type(e).__name__}: {e}",
+        )
 
     if oficial:
         print(f"CARGA OFICIAL: {resultado.get('filas_cargadas')} filas.")
