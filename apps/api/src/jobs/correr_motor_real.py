@@ -49,6 +49,7 @@ SNAPSHOT_DIR = Path(os.environ.get("MOTOR_SNAPSHOT_DIR", _API_DIR / "data" / "pa
 SALIDA = _API_DIR / "data" / "sugerido_motor.csv"
 SALIDA_LT = _API_DIR / "data" / "lead_time_motor.csv"
 SALIDA_STOCK = _API_DIR / "data" / "stock_unificado_motor.csv"
+SALIDA_TRANSITO = _API_DIR / "data" / "stock_transito_motor.csv"
 
 
 def _leer_env() -> dict[str, str]:
@@ -243,6 +244,11 @@ def construir_csv(hoy: date | None = None) -> Path:
     # El stock por bodega: la plataforma lo muestra en la ficha del catalogo. Antes
     # esa tabla la llenaba el Power BI Desktop y al retirarlo quedo congelada.
     _guardar_stock_unificado(fuentes)
+    # El transito de TODOS los productos, no solo de los que el sugerido evalua.
+    _guardar_transito(fuentes)
+    # Las fuentes quedan a mano para que `run` publique la equivalencia de SKU
+    # sin volver a leer los Excel (son minutos de lectura).
+    globals()['_ULTIMAS_FUENTES'] = fuentes
     return pipeline.exportar_csv(df, SALIDA)
 
 
@@ -269,6 +275,76 @@ def _guardar_stock_unificado(fuentes: dict) -> Path | None:
     # Sin filas en cero: no aportan nada al catalogo y son la mayoria del archivo.
     pl.concat(partes).filter(pl.col("stock") != 0).write_csv(SALIDA_STOCK)
     return SALIDA_STOCK
+
+
+def _guardar_transito(fuentes: dict) -> Path | None:
+    """Escribe el transito vigente por (producto, sucursal) de TODO el seguimiento.
+
+    El sugerido ya calcula este numero, pero solo lo publica pegado a sus propias
+    filas (`sugerido.stock_en_transito_suc`), y el sugerido es un subconjunto chico
+    del catalogo: 1.936 filas para Linderos de 409K productos. Cuando un vendedor
+    pide un repuesto que no esta en el sugerido -que es el caso normal, porque pide
+    justo lo que no se stockea-, el comprador no tenia forma de saber si ya venia
+    en camino, y podia comprar de nuevo algo que ya estaba pedido.
+
+    Se usa la MISMA funcion del motor (`_stock_transito`) a proposito: si aqui se
+    reimplementara el filtro de "OC vigente", la plataforma mostraria un numero y
+    el sugerido otro, y no habria forma de saber cual creer.
+    """
+    from datetime import date as _date
+
+    from ..motor.sugerido import _stock_transito
+
+    seg = fuentes.get("seguimiento_transito")
+    if seg is None or seg.is_empty():
+        return None
+    df = _stock_transito(seg, _date.today(), con_fecha=True)
+    if df.is_empty():
+        return None
+    df.rename(
+        {"producto_master": "producto", "sucursal_final": "sucursal_id",
+         "stock_transito": "cantidad"}
+    ).write_csv(SALIDA_TRANSITO)
+    return SALIDA_TRANSITO
+
+
+def publicar_transito() -> dict | None:
+    """Sube a la plataforma el transito vigente (reemplaza la foto anterior)."""
+    import csv
+
+    import httpx
+
+    if not SALIDA_TRANSITO.exists():
+        return None
+    base, email, password = _credenciales()
+    if not email or not password:
+        return None
+    with open(SALIDA_TRANSITO, encoding="utf-8", newline="") as f:
+        filas = [
+            {
+                "producto": r["producto"],
+                "sucursal_id": r["sucursal_id"] or None,
+                "cantidad": float(r["cantidad"]),
+                "pedido_desde": (r.get("pedido_desde") or "")[:10] or None,
+            }
+            for r in csv.DictReader(f)
+            if r.get("producto") and r.get("cantidad")
+        ]
+    try:
+        with httpx.Client(timeout=300) as c:
+            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
+            r.raise_for_status()
+            token = r.json()["token"]
+            r = c.post(
+                f"{base}/api/admin/stock-transito",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"filas": filas},
+            )
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:  # noqa: BLE001 - publicar el transito nunca debe romper la carga
+        print(f"  (no se pudo publicar el transito: {e})")
+        return None
 
 
 def publicar_stock_unificado() -> dict | None:
@@ -308,6 +384,59 @@ def publicar_stock_unificado() -> dict | None:
             return r.json()
     except Exception as e:  # noqa: BLE001 - publicar el stock nunca debe romper la carga
         print(f"  (no se pudo publicar el stock: {e})")
+        return None
+
+
+def publicar_sku_proveedor(fuentes: dict) -> dict | None:
+    """Sube la equivalencia codigo de Curifor -> SKU del portal del proveedor.
+
+    Ford pide su codigo con barras ("SZ6Z/3B437/B/"), que separa prefijo, basico y
+    sufijos y NO se deriva con una regla: hay que mirarlo en su lista. Antes el
+    comprador hacia esa conversion con un BUSCARV contra una tabla de 111.773
+    filas pegada en su Excel; ahora la plataforma arma el archivo del portal sola.
+
+    Se publica la lista completa (no solo lo que el sugerido pide) porque un
+    requerimiento de sucursal puede traer cualquier codigo.
+    """
+    import httpx
+
+    lista = fuentes.get("precios_ford")
+    if lista is None or lista.is_empty():
+        return None
+    base, email, password = _credenciales()
+    if not email or not password:
+        return None
+    # `clave_precio` ya dejo la clave normalizada al leer la lista; el SKU es el
+    # PartNumber original, que no se conserva. Se relee para tener los dos.
+    from ..motor import lectores_excel as lx
+
+    ruta = _buscar("precios_ford", obligatorio=False)
+    if ruta is None:
+        return None
+    import polars as pl
+
+    df = pl.read_excel(ruta, sheet_name="Precios").select("PartNumber").unique()
+    filas = []
+    for (sku,) in df.iter_rows():
+        clave = lx.clave_precio(sku)
+        if clave and sku:
+            filas.append({"clave": clave, "sku": str(sku).strip()})
+    if not filas:
+        return None
+    try:
+        with httpx.Client(timeout=300) as c:
+            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
+            r.raise_for_status()
+            token = r.json()["token"]
+            r = c.post(
+                f"{base}/api/requerimiento/sku-proveedor",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"proveedor": "FORD", "filas": filas},
+            )
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:  # noqa: BLE001 - nunca debe romper la carga del sugerido
+        print(f"  (no se pudo publicar la equivalencia de SKU: {e})")
         return None
 
 
@@ -532,6 +661,16 @@ def run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
         stk = publicar_stock_unificado()
         if stk:
             print(f"  stock publicado: {stk.get('filas_cargadas')} filas.")
+        # El transito de todo el catalogo, para que el comprador no compre de nuevo
+        # algo que ya viene en camino aunque no este en el sugerido.
+        tra = publicar_transito()
+        if tra:
+            print(f"  transito publicado: {tra.get('filas_cargadas')} filas.")
+        # Equivalencia codigo Curifor -> SKU del portal, para armar el archivo de
+        # carga masiva sin que el comprador convierta codigos a mano.
+        sku = publicar_sku_proveedor(globals().get("_ULTIMAS_FUENTES") or {})
+        if sku:
+            print(f"  equivalencias de SKU publicadas: {sku.get('filas_cargadas')} ({sku.get('proveedor')}).")
     else:
         print(
             f"SOMBRA: paridad {resultado['paridad_pct']}% "

@@ -57,14 +57,22 @@ def _stock_activo(miembros: pl.DataFrame, stock: pl.DataFrame, stock_frontera: p
     )
 
 
-def _stock_transito(seg: pl.DataFrame, hoy: date) -> pl.DataFrame:
+def _stock_transito(
+    seg: pl.DataFrame, hoy: date, *, con_fecha: bool = False
+) -> pl.DataFrame:
     """Tránsito vigente por (producto, sucursal) desde el seguimiento.
 
     SIN expandir el grupo de reemplazos: aunque la medida DAX intenta expandir
     con TREATAS, la relación bidireccional Sugerido⇄Dim Producto→Seguimiento
     deja el seguimiento pre-filtrado al master y la intersección anula la
     expansión. El comportamiento real del modelo (y del Excel de la
-    plataforma) es tránsito solo del producto master."""
+    plataforma) es tránsito solo del producto master.
+
+    `con_fecha=True` agrega la OC más antigua del grupo. No lo usa el sugerido
+    (por eso es opcional y no cambia lo que ya se calcula): lo usa el job que
+    publica el tránsito a la plataforma, donde el comprador necesita saber no
+    solo cuánto viene sino desde cuándo lleva pedido.
+    """
     estado_oc = pl.col("EstadoOC").str.to_lowercase()
     estado_doc = pl.col("EstadoDoc").str.to_lowercase()
     origen = pl.col("Origen").str.to_lowercase()
@@ -88,9 +96,17 @@ def _stock_transito(seg: pl.DataFrame, hoy: date) -> pl.DataFrame:
     )
 
     vigente = seg.filter(curifor | frontera)  # orígenes disjuntos: unión == suma de ambas ramas
+    agregados = [pl.col("Cantidad").sum().alias("stock_transito")]
+    if con_fecha:
+        # La fecha del documento cuando la OC es de Frontera (ahi FechaOC no aplica).
+        agregados.append(
+            pl.min_horizontal(
+                pl.col("FechaOC").min(), pl.col("FechaDoc").min()
+            ).alias("pedido_desde")
+        )
     return (
         vigente.group_by(["Producto", "SucursalID"])
-        .agg(pl.col("Cantidad").sum().alias("stock_transito"))
+        .agg(agregados)
         .rename({"Producto": "producto_master", "SucursalID": "sucursal_final"})
     )
 
