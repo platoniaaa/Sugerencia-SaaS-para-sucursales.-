@@ -347,6 +347,101 @@ def publicar_transito() -> dict | None:
         return None
 
 
+def publicar_ventas_historicas() -> dict | None:
+    """Sube a la plataforma los MESES DE VENTA que le faltan.
+
+    Esta tabla la usa la plataforma para la columna "Venta 12m", el grafico de
+    consumo del requerimiento y la pantalla de Ventas historicas. Hasta ahora se
+    cargaba con un job manual conectado directo a la base: el mes que se pegaba en
+    el respaldo de Ventas no llegaba nunca, y esas vistas se quedaban atras sin
+    avisar a nadie. Paso con julio-2026.
+
+    Se publica SOLO lo que falta: se le pregunta a la plataforma hasta que periodo
+    tiene y se suben los posteriores. En un dia normal no sube nada; cuando se
+    pega un mes nuevo, sube ese mes.
+
+    La sucursal va NORMALIZADA ("08 TALCA" -> "TALCA"), igual que hace el motor
+    para sus propios calculos. El job manual copiaba la celda cruda, y por eso la
+    tabla quedo con el mismo lugar bajo dos nombres.
+    """
+    import re
+
+    import httpx
+    import polars as pl
+
+    base, email, password = _credenciales()
+    if not email or not password:
+        return None
+
+    archivos = _archivos_de_ventas(_fin_mes_cerrado(date.today()))
+    if not archivos:
+        return None
+
+    try:
+        with httpx.Client(timeout=600) as c:
+            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
+            r.raise_for_status()
+            token = r.json()["token"]
+            cab = {"Authorization": f"Bearer {token}"}
+
+            r = c.get(f"{base}/api/ventas-historicas/meta", headers=cab)
+            r.raise_for_status()
+            ultimo = r.json().get("periodo_max") or "000000"
+
+            filas: list[dict] = []
+            for ruta in archivos:
+                df = pl.read_excel(
+                    ruta, columns=["Periodo", "Producto", "SUCURSAL", "Cantidad", "Total Neta"]
+                )
+                df = (
+                    df.with_columns(
+                        pl.col("Periodo").cast(pl.Utf8).str.strip_chars(),
+                        pl.col("SUCURSAL").cast(pl.Utf8)
+                        .str.strip_chars()
+                        .str.replace(r"^\d{1,2}\s+", ""),
+                        pl.col("Producto").cast(pl.Utf8).str.strip_chars(),
+                    )
+                    .filter(pl.col("Periodo") > pl.lit(ultimo))
+                    .group_by(["Periodo", "Producto", "SUCURSAL"])
+                    .agg(
+                        pl.col("Cantidad").sum().alias("cantidad"),
+                        pl.col("Total Neta").sum().alias("neto"),
+                        pl.len().alias("n_lineas"),
+                    )
+                )
+                for p, prod, suc, cant, neto, n in df.iter_rows():
+                    filas.append({
+                        "periodo": p, "producto": prod, "sucursal": suc,
+                        "cantidad": cant, "neto": neto, "n_lineas": n,
+                    })
+
+            if not filas:
+                return {"filas_cargadas": 0, "periodos": [], "al_dia": True}
+
+            # Un request POR MES, y no lotes de tamano fijo: el endpoint BORRA el
+            # periodo antes de insertar, asi que partir un mes en dos requests
+            # haria que el segundo se llevara por delante lo que subio el primero.
+            # Un mes son ~15.000 filas agregadas: entra sin problema en una sola.
+            por_mes: dict[str, list[dict]] = {}
+            for f in filas:
+                por_mes.setdefault(f["periodo"], []).append(f)
+
+            cargadas, periodos = 0, []
+            for periodo in sorted(por_mes):
+                r = c.post(
+                    f"{base}/api/admin/ventas-historicas",
+                    headers=cab, json={"filas": por_mes[periodo]},
+                )
+                r.raise_for_status()
+                d = r.json()
+                cargadas += d.get("filas_cargadas", 0)
+                periodos.extend(d.get("periodos", []))
+            return {"filas_cargadas": cargadas, "periodos": periodos, "al_dia": False}
+    except Exception as e:  # noqa: BLE001 - publicar las ventas nunca debe romper la carga
+        print(f"  (no se pudieron publicar las ventas: {e})")
+        return None
+
+
 def publicar_stock_unificado() -> dict | None:
     """Sube a la plataforma el stock por bodega (reemplaza la foto vigente)."""
     import csv
@@ -666,6 +761,14 @@ def run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
         tra = publicar_transito()
         if tra:
             print(f"  transito publicado: {tra.get('filas_cargadas')} filas.")
+        # Los meses de venta que la plataforma no tenga. Normalmente ninguno; al
+        # pegar un mes nuevo en el respaldo, ese mes.
+        vta = publicar_ventas_historicas()
+        if vta and vta.get("al_dia"):
+            print("  ventas: la plataforma ya esta al dia.")
+        elif vta:
+            print(f"  ventas publicadas: {vta.get('filas_cargadas')} filas "
+                  f"(periodos {', '.join(vta.get('periodos') or [])}).")
         # Equivalencia codigo Curifor -> SKU del portal, para armar el archivo de
         # carga masiva sin que el comprador convierta codigos a mano.
         sku = publicar_sku_proveedor(globals().get("_ULTIMAS_FUENTES") or {})
