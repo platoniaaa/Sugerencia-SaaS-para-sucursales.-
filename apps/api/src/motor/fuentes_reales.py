@@ -340,4 +340,34 @@ def cargar_fuentes_reales(
         except Exception as e:  # noqa: BLE001 - una lista rota no puede voltear el sugerido
             print(f"  (no se pudo leer {clave}: {e})")
 
+    # La cadena de reemplazo que publica FORD (desde ago-2026) sale de la MISMA hoja
+    # de precios. A diferencia de los precios, esto SI mueve el sugerido: agrupa el
+    # stock y la demanda del codigo descontinuado con los del vigente, igual que el
+    # "mix andres". Va despues del mapeo a proposito: el mix manda y FORD solo llena
+    # huecos (ver `ampliar_mapeo_con_ford`).
+    if (
+        precios_ford_xlsx is not None
+        and "mapeo" in fuentes
+        and ventas_crudo is not None
+        and fin_mes_cerrado  # sin el mes cerrado no se puede elegir el master del grupo
+    ):
+        try:
+            reemplazos = _lx.leer_reemplazos_ford(precios_ford_xlsx)
+            if not reemplazos.is_empty():
+                conocidos = pl.concat([
+                    fuentes["mapeo"].select(pl.col("Producto")),
+                    ventas_crudo.select(pl.col("Producto")),
+                    stock.select(pl.col("Producto")),
+                ]).get_column("Producto").drop_nulls().unique()
+                antes = fuentes["mapeo"].height
+                fuentes["mapeo"] = dim.ampliar_mapeo_con_ford(
+                    fuentes["mapeo"], reemplazos, conocidos, ventas_crudo, fin_mes_cerrado
+                )
+                sumados = fuentes["mapeo"].height - antes
+                if sumados:
+                    print(f"  reemplazos FORD: {sumados} producto(s) mas quedaron agrupados.")
+            fuentes["reemplazos_ford"] = reemplazos
+        except Exception as e:  # noqa: BLE001 - mismo criterio que los precios
+            print(f"  (no se pudieron leer los reemplazos FORD: {e})")
+
     return fuentes

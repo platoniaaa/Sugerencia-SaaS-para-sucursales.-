@@ -20,6 +20,11 @@ from datetime import date
 
 import polars as pl
 
+# `clave_precio` normaliza un codigo para compararlo entre el maestro de Curifor y
+# la lista de un proveedor. Vive en el lector porque nacio ahi con los precios; se
+# reusa aca para los reemplazos. `lectores_excel` no importa este modulo: sin ciclo.
+from .lectores_excel import clave_precio
+
 # --------------------------------------------------------------------------- #
 # Dim Sucursal
 # --------------------------------------------------------------------------- #
@@ -304,6 +309,103 @@ def calcular_mapeo_master(
         grupo.join(elegido, on="master_orig", how="left")
         .select(["Producto", "Producto_Master"]).unique(subset=["Producto"], keep="first")
     )
+
+
+def ampliar_mapeo_con_ford(
+    mapeo: pl.DataFrame,
+    reemplazos_ford: pl.DataFrame,
+    productos: pl.Series | list[str],
+    ventas: pl.DataFrame,
+    fin_mes_cerrado: date,
+) -> pl.DataFrame:
+    """Suma al mapeo los grupos que FORD declara y el mix de Andres no cubre.
+
+    El mix MANDA: un producto que ya quedo agrupado por `calcular_mapeo_master` no
+    lo toca FORD. No es un capricho — se midio (07-08-2026): mezclando los pares de
+    FORD dentro del mix, 41 productos que hoy estan agrupados DEJABAN de estarlo y
+    4 cambiaban de master, porque los pares nuevos creaban ambiguedades que hacian
+    caer grupos que hoy funcionan. Respetando el mix: 896 productos entran a un
+    grupo, 0 se pierden y 0 cambian de master.
+
+    Se toman las dos direcciones de la lista (`Reemplaza_A` y `Reemplazado_Por`) y
+    se aplican las mismas salvaguardas del DAX: un producto no puede pertenecer a
+    dos grupos, y el master del grupo es el que mas vendio en 6 meses cerrados.
+    A diferencia del mix, aca no hay tope de 3 reemplazos: la lista de FORD trae
+    cadenas mas largas y truncarlas partiria un grupo real en dos.
+    """
+    if reemplazos_ford.is_empty():
+        return mapeo
+
+    # clave normalizada -> codigo real de Curifor (el primero, estable por orden).
+    por_clave: dict[str, str] = {}
+    for p in (productos.to_list() if isinstance(productos, pl.Series) else productos):
+        k = clave_precio(p)
+        if k and k not in por_clave:
+            por_clave[k] = p
+
+    ya = set(mapeo["Producto"].to_list()) | set(mapeo["Producto_Master"].to_list())
+
+    # vigente -> {viejos}, ambas direcciones, solo con los dos lados en Curifor.
+    grupos: dict[str, set[str]] = {}
+    for fila in reemplazos_ford.iter_rows(named=True):
+        yo = por_clave.get(fila["clave_precio"])
+        if not yo or yo in ya:
+            continue
+        viejos = grupos.setdefault(yo, set())
+        for k in fila["reemplaza_a"] or []:
+            otro = por_clave.get(k)
+            if otro and otro != yo and otro not in ya:
+                viejos.add(otro)
+        if fila["clave_vigente"]:
+            nuevo = por_clave.get(fila["clave_vigente"])
+            if nuevo and nuevo != yo and nuevo not in ya:
+                grupos.setdefault(nuevo, set()).add(yo)
+    grupos = {g: v for g, v in grupos.items() if v}
+    if not grupos:
+        return mapeo
+
+    # Salvaguarda 1: si A agrupa a B y B agrupa a alguien, el grupo es ambiguo.
+    reemplazados = {x for v in grupos.values() for x in v}
+    grupos = {g: v for g, v in grupos.items() if g not in reemplazados}
+    # Salvaguarda 2: un producto reclamado por dos grupos distintos sale de los dos.
+    duenos: dict[str, int] = {}
+    for v in grupos.values():
+        for x in v:
+            duenos[x] = duenos.get(x, 0) + 1
+    compartidos = {x for x, n in duenos.items() if n > 1}
+    grupos = {g: v - compartidos for g, v in grupos.items()}
+    grupos = {g: v for g, v in grupos.items() if v}
+    if not grupos:
+        return mapeo
+
+    filas = [
+        {"master_orig": g, "Producto": p}
+        for g, v in grupos.items()
+        for p in (g, *sorted(v))
+    ]
+    grupo = pl.DataFrame(filas, schema={"master_orig": pl.Utf8, "Producto": pl.Utf8}).unique()
+
+    # Master del grupo = el que mas vendio en 6 meses; desempata el original.
+    ini6 = _mes_menos(fin_mes_cerrado, 6)
+    v = (
+        ventas.filter((pl.col("Fecha") >= ini6) & (pl.col("Fecha") < fin_mes_cerrado))
+        .group_by("Producto").agg(pl.col("Cantidad").sum().alias("ventas"))
+    )
+    g = grupo.join(v, on="Producto", how="left").with_columns(
+        pl.col("ventas").fill_null(0),
+        (pl.col("Producto") == pl.col("master_orig")).cast(pl.Int8).alias("es_master"),
+    )
+    elegido = (
+        g.sort(["ventas", "es_master", "Producto"], descending=[True, True, True])
+        .group_by("master_orig").agg(pl.col("Producto").first().alias("Producto_Master"))
+    )
+    nuevo = (
+        grupo.join(elegido, on="master_orig", how="left")
+        .select(["Producto", "Producto_Master"])
+        .unique(subset=["Producto"], keep="first")
+    )
+    # El mix va primero: si algo se coló, gana el grupo que ya existía.
+    return pl.concat([mapeo, nuevo]).unique(subset=["Producto"], keep="first")
 
 
 def _mes_menos(fin_mes_cerrado: date, meses: int) -> date:

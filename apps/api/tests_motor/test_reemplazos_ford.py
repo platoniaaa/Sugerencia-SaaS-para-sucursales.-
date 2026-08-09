@@ -1,0 +1,208 @@
+"""Cadena de reemplazo de la lista FORD (extraccion WINGS, desde ago-2026).
+
+FORD publica que codigo descontinuado fue sustituido por cual vigente, en las dos
+direcciones (`Reemplazado_Por` y `Reemplaza_A`). Con eso el motor puede agrupar
+stock y demanda del viejo con el nuevo, que hasta ahora solo salia del "mix andres".
+
+El mix MANDA: se midio contra los datos reales el 07-08-2026 que mezclar los pares
+de FORD dentro del mix hacia que 41 productos hoy agrupados DEJARAN de estarlo y 4
+cambiaran de master. Respetandolo: 896 productos entran a un grupo, 0 se pierden.
+"""
+from datetime import date
+
+import polars as pl
+from openpyxl import Workbook
+
+from src.motor.dimensiones import ampliar_mapeo_con_ford
+from src.motor.lectores_excel import leer_reemplazos_ford
+
+CABECERAS = [
+    "PartNumber", "Precio_Publico", "Reemplazado_Por", "Cadena_Reemplazo",
+    "Reemplaza_A", "Estado_Reemplazo", "Reemplazo_Aviso",
+]
+
+
+def _xlsx(ruta, filas, cabeceras=CABECERAS):
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Precios"
+    ws.append(cabeceras)
+    for f in filas:
+        ws.append(f)
+    wb.save(ruta)
+
+
+def _reem(**kw):
+    """Fila del frame que devuelve el lector, con lo minimo para agrupar."""
+    base = {
+        "clave_precio": None, "sku_ford": None, "clave_vigente": None,
+        "sku_vigente": None, "cadena": None, "reemplaza_a": [],
+        "estado_reemplazo": None, "precio_vigente_confiable": False, "aviso": None,
+    }
+    base.update(kw)
+    return base
+
+
+def _frame(filas):
+    return pl.DataFrame(filas, schema={
+        "clave_precio": pl.Utf8, "sku_ford": pl.Utf8, "clave_vigente": pl.Utf8,
+        "sku_vigente": pl.Utf8, "cadena": pl.Utf8, "reemplaza_a": pl.List(pl.Utf8),
+        "estado_reemplazo": pl.Utf8, "precio_vigente_confiable": pl.Boolean,
+        "aviso": pl.Utf8,
+    })
+
+
+VENTAS_VACIAS = pl.DataFrame(
+    {"Producto": [], "Fecha": [], "Cantidad": []},
+    schema={"Producto": pl.Utf8, "Fecha": pl.Date, "Cantidad": pl.Float64},
+)
+FIN = date(2026, 8, 1)
+
+
+# --- El lector -------------------------------------------------------------------
+
+def test_lee_las_dos_direcciones_y_normaliza_las_claves(tmp_path):
+    ruta = tmp_path / "ford.xlsx"
+    _xlsx(ruta, [
+        ["KK3Z/3504/BR/", 100, "KK3Z/3504/U/", "KK3Z/3504/BR/ > KK3Z/3504/U/",
+         None, "Encontrado", None],
+        ["AB3Z/1A380/B/", 200, None, None, "AB3Z/1A380/A/; AB3Z/1A380/AA/", None, None],
+    ])
+    df = leer_reemplazos_ford(ruta)
+    a, b = df.sort("clave_precio").to_dicts()
+
+    assert a["clave_precio"] == "AB3Z1A380B"
+    assert a["reemplaza_a"] == ["AB3Z1A380A", "AB3Z1A380AA"]
+    assert a["clave_vigente"] is None
+
+    assert b["clave_precio"] == "KK3Z3504BR"
+    assert b["clave_vigente"] == "KK3Z3504U"      # las barras se van
+    assert b["cadena"] == "KK3Z/3504/BR/ > KK3Z/3504/U/"
+
+
+def test_sin_candidato_vigente_marca_el_precio_como_no_confiable(tmp_path):
+    """FORD sabe que fue reemplazada pero no pudo traer el precio del sucesor.
+    Esos precios no se pueden mostrar como precio (999 filas al 07-08-2026)."""
+    ruta = tmp_path / "ford.xlsx"
+    _xlsx(ruta, [
+        ["A/1/", 100, "B/1/", None, None, "Encontrado", None],
+        ["C/1/", 100, "D/1/", None, None, "Sin candidato vigente", "revisar a mano"],
+    ])
+    df = leer_reemplazos_ford(ruta).sort("clave_precio")
+    assert df["precio_vigente_confiable"].to_list() == [True, False]
+    assert df.to_dicts()[1]["aviso"] == "revisar a mano"
+
+
+def test_una_lista_vieja_sin_las_columnas_no_rompe(tmp_path):
+    """Antes de ago-2026 la lista no traia reemplazos: el motor no puede caerse."""
+    ruta = tmp_path / "ford.xlsx"
+    _xlsx(ruta, [["A/1/", 100]], cabeceras=["PartNumber", "Precio_Publico"])
+    df = leer_reemplazos_ford(ruta)
+    assert df.is_empty()
+    assert "clave_vigente" in df.columns
+
+
+# --- La agrupacion ---------------------------------------------------------------
+
+def _mapeo(pares):
+    return pl.DataFrame(
+        {"Producto": [p for p, _ in pares], "Producto_Master": [m for _, m in pares]},
+        schema={"Producto": pl.Utf8, "Producto_Master": pl.Utf8},
+    )
+
+
+def test_agrupa_el_viejo_con_el_vigente():
+    reem = _frame([_reem(clave_precio="AB3Z1A380B", reemplaza_a=["AB3Z1A380A"])])
+    out = ampliar_mapeo_con_ford(
+        _mapeo([]), reem, ["25 AB3Z1A380B", "25 AB3Z1A380A"], VENTAS_VACIAS, FIN
+    )
+    assert dict(out.rows()) == {
+        "25 AB3Z1A380B": "25 AB3Z1A380B",
+        "25 AB3Z1A380A": "25 AB3Z1A380B",
+    }
+
+
+def test_el_mix_manda_y_ford_no_lo_toca():
+    """Lo medido: mezclarlos hacia caer 41 grupos que hoy funcionan."""
+    mapeo = _mapeo([("25 AAA", "25 AAA"), ("25 BBB", "25 AAA")])
+    # FORD querria poner 25 BBB en otro grupo; no puede.
+    reem = _frame([_reem(clave_precio="CCC", reemplaza_a=["BBB"])])
+    out = ampliar_mapeo_con_ford(
+        mapeo, reem, ["25 AAA", "25 BBB", "25 CCC"], VENTAS_VACIAS, FIN
+    )
+    assert dict(out.rows())["25 BBB"] == "25 AAA"   # intacto
+    assert "25 CCC" not in dict(out.rows())          # su unico miembro estaba tomado
+
+
+def test_un_producto_reclamado_por_dos_grupos_queda_fuera_de_los_dos():
+    reem = _frame([
+        _reem(clave_precio="AAA", reemplaza_a=["ZZZ"]),
+        _reem(clave_precio="BBB", reemplaza_a=["ZZZ"]),
+    ])
+    out = ampliar_mapeo_con_ford(
+        _mapeo([]), reem, ["25 AAA", "25 BBB", "25 ZZZ"], VENTAS_VACIAS, FIN
+    )
+    assert "25 ZZZ" not in dict(out.rows())
+
+
+def test_en_una_cadena_encadenada_solo_sobrevive_el_primer_grupo():
+    """A agrupa a B y B agrupa a C: el grupo de B se cae y C queda suelto.
+
+    Es la misma regla del DAX que ya aplica `calcular_mapeo_master`: un master que
+    TAMBIEN figura como reemplazo de otro se descarta (`sin_conflicto`), porque el
+    grupo seria ambiguo. Se replica aca a proposito para que las dos fuentes de
+    reemplazos se comporten igual y no haya que explicar dos reglas distintas.
+    """
+    reem = _frame([
+        _reem(clave_precio="AAA", reemplaza_a=["BBB"]),
+        _reem(clave_precio="BBB", reemplaza_a=["CCC"]),
+    ])
+    out = ampliar_mapeo_con_ford(
+        _mapeo([]), reem, ["25 AAA", "25 BBB", "25 CCC"], VENTAS_VACIAS, FIN
+    )
+    assert dict(out.rows()) == {"25 AAA": "25 AAA", "25 BBB": "25 AAA"}
+    assert "25 CCC" not in dict(out.rows())
+
+
+def test_el_master_del_grupo_es_el_que_mas_vendio():
+    reem = _frame([_reem(clave_precio="NUEVO1", reemplaza_a=["VIEJO1"])])
+    ventas = pl.DataFrame({
+        "Producto": ["25 NUEVO1", "25 VIEJO1"],
+        "Fecha": [date(2026, 5, 1), date(2026, 5, 1)],
+        "Cantidad": [3.0, 40.0],
+    })
+    out = ampliar_mapeo_con_ford(
+        _mapeo([]), reem, ["25 NUEVO1", "25 VIEJO1"], ventas, FIN
+    )
+    assert set(dict(out.rows()).values()) == {"25 VIEJO1"}
+
+
+def test_codigos_que_curifor_no_tiene_se_ignoran():
+    reem = _frame([_reem(clave_precio="AAA", reemplaza_a=["NOEXISTE"])])
+    out = ampliar_mapeo_con_ford(_mapeo([]), reem, ["25 AAA"], VENTAS_VACIAS, FIN)
+    assert out.is_empty()
+
+
+def test_sin_reemplazos_devuelve_el_mapeo_igual():
+    mapeo = _mapeo([("25 AAA", "25 AAA")])
+    out = ampliar_mapeo_con_ford(mapeo, _frame([]), ["25 AAA"], VENTAS_VACIAS, FIN)
+    assert out.to_dicts() == mapeo.to_dicts()
+
+
+def test_la_direccion_reemplazado_por_tambien_agrupa():
+    """`Reemplazado_Por` dice 'a mi me reemplaza X': el grupo es el mismo."""
+    reem = _frame([_reem(clave_precio="VIEJO2", clave_vigente="NUEVO2")])
+    out = ampliar_mapeo_con_ford(
+        _mapeo([]), reem, ["25 VIEJO2", "25 NUEVO2"], VENTAS_VACIAS, FIN
+    )
+    assert len(dict(out.rows())) == 2
+    assert len(set(dict(out.rows()).values())) == 1   # los dos en el mismo grupo
+
+
+def test_mas_de_tres_reemplazos_no_se_truncan():
+    """El mix solo admite Reem1/2/3; la lista de FORD trae cadenas mas largas y
+    cortarlas partiria un grupo real en dos."""
+    reem = _frame([_reem(clave_precio="NUEVO3", reemplaza_a=["V1", "V2", "V3", "V4"])])
+    productos = ["25 NUEVO3", "25 V1", "25 V2", "25 V3", "25 V4"]
+    out = ampliar_mapeo_con_ford(_mapeo([]), reem, productos, VENTAS_VACIAS, FIN)
+    assert out.height == 5

@@ -542,5 +542,71 @@ def leer_precios_ford(ruta: str | Path) -> pl.DataFrame:
     return _leer_precios(ruta, "PartNumber", COLUMNAS_PRECIOS_FORD)
 
 
+# Columnas de reemplazo de la extraccion FORD WINGS (desde ago-2026). Vienen en la
+# misma hoja 'Precios' y son opcionales: una lista vieja sin ellas se lee igual.
+COLUMNAS_REEMPLAZO_FORD = [
+    "Reemplazado_Por", "Cadena_Reemplazo", "Reemplaza_A",
+    "Estado_Reemplazo", "Reemplazo_Aviso",
+]
+
+
+def leer_reemplazos_ford(ruta: str | Path) -> pl.DataFrame:
+    """Cadena de reemplazo que publica FORD, en claves comparables con Curifor.
+
+    Devuelve una fila por codigo de la lista con:
+      clave_precio, sku_ford, clave_vigente, sku_vigente, cadena, reemplaza_a
+      (lista de claves), estado_reemplazo, precio_vigente_confiable, aviso.
+
+    Dos direcciones, porque la lista trae las dos y no se solapan:
+      - `Reemplazado_Por`: a ESTA pieza la reemplaza otra (1.070 codigos).
+      - `Reemplaza_A`: esta pieza reemplazo a otras (11.025 codigos), que es de
+        donde sale casi todo lo que Curifor efectivamente tiene.
+
+    `precio_vigente_confiable` es False cuando FORD dice "Sin candidato vigente":
+    el reemplazo se conoce pero no se pudo traer el precio del sucesor, y esos
+    precios NO deben mostrarse como precio (ver el contexto de la extraccion).
+    Si la hoja no trae las columnas, devuelve un frame vacio con el mismo esquema.
+    """
+    esquema = {
+        "clave_precio": pl.Utf8, "sku_ford": pl.Utf8, "clave_vigente": pl.Utf8,
+        "sku_vigente": pl.Utf8, "cadena": pl.Utf8, "reemplaza_a": pl.List(pl.Utf8),
+        "estado_reemplazo": pl.Utf8, "precio_vigente_confiable": pl.Boolean,
+        "aviso": pl.Utf8,
+    }
+    df = pl.read_excel(ruta, sheet_name="Precios")
+    if not any(c in df.columns for c in COLUMNAS_REEMPLAZO_FORD):
+        return pl.DataFrame(schema=esquema)
+
+    def _txt(col: str) -> pl.Expr:
+        if col not in df.columns:
+            return pl.lit(None, dtype=pl.Utf8).alias(col)
+        return pl.col(col).cast(pl.Utf8, strict=False).str.strip_chars().replace("", None)
+
+    out = df.select(
+        pl.col("PartNumber").cast(pl.Utf8).alias("sku_ford"),
+        *[_txt(c) for c in COLUMNAS_REEMPLAZO_FORD],
+    ).with_columns(
+        pl.col("sku_ford").map_elements(clave_precio, return_dtype=pl.Utf8).alias("clave_precio"),
+        pl.col("Reemplazado_Por").alias("sku_vigente"),
+        pl.col("Reemplazado_Por")
+        .map_elements(clave_precio, return_dtype=pl.Utf8)
+        .alias("clave_vigente"),
+        pl.col("Cadena_Reemplazo").alias("cadena"),
+        pl.col("Estado_Reemplazo").alias("estado_reemplazo"),
+        pl.col("Reemplazo_Aviso").alias("aviso"),
+        # Solo "Encontrado" trae precio del sucesor; "Sin candidato vigente" no.
+        (pl.col("Estado_Reemplazo") == "Encontrado").alias("precio_vigente_confiable"),
+        # "A; B; C" -> claves normalizadas, sin vacios.
+        pl.col("Reemplaza_A")
+        .str.split(";")
+        .list.eval(
+            pl.element().str.strip_chars().map_elements(clave_precio, return_dtype=pl.Utf8)
+        )
+        .list.drop_nulls()
+        .alias("reemplaza_a"),
+    )
+    return out.select(list(esquema)).filter(pl.col("clave_precio").is_not_null())
+
+
 def leer_precios_gildemeister(ruta: str | Path) -> pl.DataFrame:
     return _leer_precios(ruta, "Codigo", COLUMNAS_PRECIOS_GILDEMEISTER)
