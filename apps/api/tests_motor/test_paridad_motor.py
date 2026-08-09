@@ -124,8 +124,13 @@ def test_ciclo_orden_cd_es_5(etapas):
     )
     assert cd.height > 0, "el fixture no tiene filas abastecidas por CD para probar"
 
+    # Se recorren TODAS (205 en el fixture), no una muestra. Antes eran `head(25)`
+    # sobre el resultado de un join, cuyo orden polars no garantiza: de las 205
+    # candidatas solo 16 distinguen CO=5 de CO=3, asi que segun que 25 salieran
+    # primero el test pasaba o fallaba con el MISMO codigo. Era intermitente y no
+    # avisaba de nada real. Recorrerlas todas es barato y ademas prueba mas.
     revisadas = 0
-    for row in cd.head(25).iter_rows(named=True):
+    for row in cd.iter_rows(named=True):
         es_cd_suc = row["sucursal_final"] == "CD REPUESTOS"
         clase = row["clasificacion_abc_agregada"] if es_cd_suc else row["clasificacion_abc"]
         if row["es_importado"] and clase in z_imp_cd:
