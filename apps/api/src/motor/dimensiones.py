@@ -352,11 +352,18 @@ def ampliar_mapeo_con_ford(
         if not yo or yo in ya:
             continue
         viejos = grupos.setdefault(yo, set())
+        # `Reemplaza_A` sale de la cadena del portal y no depende de consultar al
+        # sucesor: entra siempre. Es ademas de donde viene casi todo lo util.
         for k in fila["reemplaza_a"] or []:
             otro = por_clave.get(k)
             if otro and otro != yo and otro not in ya:
                 viejos.add(otro)
-        if fila["clave_vigente"]:
+        # `Reemplazado_Por` solo agrupa con el sucesor CONFIRMADO. Sin confirmar
+        # (999 de 1.070 filas) no se sabe si FORD no tiene sucesor o si el codigo
+        # consultado se armo mal; agrupar con un codigo equivocado suma el stock de
+        # dos piezas distintas y deja de pedirse algo que si hace falta. Al
+        # 07-08-2026 esto excluye 22 pares, contra 16 confirmados que si entran.
+        if fila["clave_vigente"] and fila["sucesor_confirmado"]:
             nuevo = por_clave.get(fila["clave_vigente"])
             if nuevo and nuevo != yo and nuevo not in ya:
                 grupos.setdefault(nuevo, set()).add(yo)

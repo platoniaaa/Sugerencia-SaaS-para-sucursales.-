@@ -37,7 +37,7 @@ def _reem(**kw):
     base = {
         "clave_precio": None, "sku_ford": None, "clave_vigente": None,
         "sku_vigente": None, "cadena": None, "reemplaza_a": [],
-        "estado_reemplazo": None, "precio_vigente_confiable": False, "aviso": None,
+        "estado_reemplazo": None, "sucesor_confirmado": False, "aviso": None,
     }
     base.update(kw)
     return base
@@ -47,7 +47,7 @@ def _frame(filas):
     return pl.DataFrame(filas, schema={
         "clave_precio": pl.Utf8, "sku_ford": pl.Utf8, "clave_vigente": pl.Utf8,
         "sku_vigente": pl.Utf8, "cadena": pl.Utf8, "reemplaza_a": pl.List(pl.Utf8),
-        "estado_reemplazo": pl.Utf8, "precio_vigente_confiable": pl.Boolean,
+        "estado_reemplazo": pl.Utf8, "sucesor_confirmado": pl.Boolean,
         "aviso": pl.Utf8,
     })
 
@@ -80,16 +80,19 @@ def test_lee_las_dos_direcciones_y_normaliza_las_claves(tmp_path):
     assert b["cadena"] == "KK3Z/3504/BR/ > KK3Z/3504/U/"
 
 
-def test_sin_candidato_vigente_marca_el_precio_como_no_confiable(tmp_path):
-    """FORD sabe que fue reemplazada pero no pudo traer el precio del sucesor.
-    Esos precios no se pueden mostrar como precio (999 filas al 07-08-2026)."""
+def test_sin_candidato_vigente_deja_el_sucesor_sin_confirmar(tmp_path):
+    """FORD sabe que fue reemplazada pero no resolvio el sucesor (999 de 1.070).
+
+    No es solo que falte el precio: tampoco esta verificado si FORD realmente no
+    tiene sucesor o si el codigo consultado se armo mal. Por eso el flag gobierna
+    tanto el precio como la agrupacion."""
     ruta = tmp_path / "ford.xlsx"
     _xlsx(ruta, [
         ["A/1/", 100, "B/1/", None, None, "Encontrado", None],
         ["C/1/", 100, "D/1/", None, None, "Sin candidato vigente", "revisar a mano"],
     ])
     df = leer_reemplazos_ford(ruta).sort("clave_precio")
-    assert df["precio_vigente_confiable"].to_list() == [True, False]
+    assert df["sucesor_confirmado"].to_list() == [True, False]
     assert df.to_dicts()[1]["aviso"] == "revisar a mano"
 
 
@@ -189,9 +192,37 @@ def test_sin_reemplazos_devuelve_el_mapeo_igual():
     assert out.to_dicts() == mapeo.to_dicts()
 
 
+def test_un_sucesor_sin_confirmar_no_agrupa():
+    """El caso de los 999 'Sin candidato vigente' (22 pares al 07-08-2026).
+
+    Se muestran como aviso pero NO tocan el calculo: si el codigo del sucesor
+    estuviera mal, agrupar sumaria el stock de dos piezas distintas y el sugerido
+    dejaria de pedir algo que si hace falta. Decision de Ignacio Calderon el
+    07-08-2026, hasta que se confirme de donde salen esos codigos.
+    """
+    reem = _frame([_reem(clave_precio="VIEJO3", clave_vigente="NUEVO3",
+                         sucesor_confirmado=False)])
+    out = ampliar_mapeo_con_ford(
+        _mapeo([]), reem, ["25 VIEJO3", "25 NUEVO3"], VENTAS_VACIAS, FIN
+    )
+    assert out.is_empty()
+
+
+def test_reemplaza_a_agrupa_aunque_el_sucesor_no_este_confirmado():
+    """`Reemplaza_A` sale de la cadena del portal, no de consultar al sucesor:
+    `Estado_Reemplazo` no le aplica y no tiene por que quedar fuera."""
+    reem = _frame([_reem(clave_precio="NUEVO4", reemplaza_a=["VIEJO4"],
+                         sucesor_confirmado=False)])
+    out = ampliar_mapeo_con_ford(
+        _mapeo([]), reem, ["25 NUEVO4", "25 VIEJO4"], VENTAS_VACIAS, FIN
+    )
+    assert out.height == 2
+
+
 def test_la_direccion_reemplazado_por_tambien_agrupa():
     """`Reemplazado_Por` dice 'a mi me reemplaza X': el grupo es el mismo."""
-    reem = _frame([_reem(clave_precio="VIEJO2", clave_vigente="NUEVO2")])
+    reem = _frame([_reem(clave_precio="VIEJO2", clave_vigente="NUEVO2",
+                         sucesor_confirmado=True)])
     out = ampliar_mapeo_con_ford(
         _mapeo([]), reem, ["25 VIEJO2", "25 NUEVO2"], VENTAS_VACIAS, FIN
     )

@@ -555,22 +555,28 @@ def leer_reemplazos_ford(ruta: str | Path) -> pl.DataFrame:
 
     Devuelve una fila por codigo de la lista con:
       clave_precio, sku_ford, clave_vigente, sku_vigente, cadena, reemplaza_a
-      (lista de claves), estado_reemplazo, precio_vigente_confiable, aviso.
+      (lista de claves), estado_reemplazo, sucesor_confirmado, aviso.
 
     Dos direcciones, porque la lista trae las dos y no se solapan:
       - `Reemplazado_Por`: a ESTA pieza la reemplaza otra (1.070 codigos).
       - `Reemplaza_A`: esta pieza reemplazo a otras (11.025 codigos), que es de
         donde sale casi todo lo que Curifor efectivamente tiene.
 
-    `precio_vigente_confiable` es False cuando FORD dice "Sin candidato vigente":
-    el reemplazo se conoce pero no se pudo traer el precio del sucesor, y esos
-    precios NO deben mostrarse como precio (ver el contexto de la extraccion).
+    `sucesor_confirmado` es False cuando FORD dice "Sin candidato vigente" (999 de
+    los 1.070). Gobierna DOS cosas y por eso no se llama "precio_...": el precio
+    del sucesor no viene, y ademas el codigo del sucesor no esta verificado -- no
+    se sabe si FORD realmente no lo tiene o si el codigo consultado se armo mal.
+    Sin esa confirmacion no se puede agrupar: juntar el stock de dos piezas que no
+    son la misma es peor que no juntarlo, porque deja de pedirse algo que si hace
+    falta. `Estado_Reemplazo` aplica solo a `Reemplazado_Por`; `Reemplaza_A` viene
+    de la cadena del portal y no depende de esa consulta.
+
     Si la hoja no trae las columnas, devuelve un frame vacio con el mismo esquema.
     """
     esquema = {
         "clave_precio": pl.Utf8, "sku_ford": pl.Utf8, "clave_vigente": pl.Utf8,
         "sku_vigente": pl.Utf8, "cadena": pl.Utf8, "reemplaza_a": pl.List(pl.Utf8),
-        "estado_reemplazo": pl.Utf8, "precio_vigente_confiable": pl.Boolean,
+        "estado_reemplazo": pl.Utf8, "sucesor_confirmado": pl.Boolean,
         "aviso": pl.Utf8,
     }
     df = pl.read_excel(ruta, sheet_name="Precios")
@@ -594,8 +600,8 @@ def leer_reemplazos_ford(ruta: str | Path) -> pl.DataFrame:
         pl.col("Cadena_Reemplazo").alias("cadena"),
         pl.col("Estado_Reemplazo").alias("estado_reemplazo"),
         pl.col("Reemplazo_Aviso").alias("aviso"),
-        # Solo "Encontrado" trae precio del sucesor; "Sin candidato vigente" no.
-        (pl.col("Estado_Reemplazo") == "Encontrado").alias("precio_vigente_confiable"),
+        # Solo "Encontrado" deja el sucesor confirmado (codigo y precio).
+        (pl.col("Estado_Reemplazo") == "Encontrado").alias("sucesor_confirmado"),
         # "A; B; C" -> claves normalizadas, sin vacios.
         pl.col("Reemplaza_A")
         .str.split(";")
