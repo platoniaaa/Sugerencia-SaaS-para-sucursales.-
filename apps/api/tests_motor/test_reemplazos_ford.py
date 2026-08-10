@@ -230,6 +230,30 @@ def test_la_direccion_reemplazado_por_tambien_agrupa():
     assert len(set(dict(out.rows()).values())) == 1   # los dos en el mismo grupo
 
 
+def test_agrupar_y_avisar_usan_universos_distintos_a_proposito():
+    """Un codigo sin venta ni stock NO entra al grupo, pero SI se avisa.
+
+    Son dos preguntas distintas. Para agrupar solo sirven los codigos que el motor
+    evalua: fusionar el stock de algo que no tiene ni venta ni stock no cambia una
+    sola fila del sugerido. Para avisar es al reves — un codigo dado de baja que
+    ademas no rota es el perfil exacto del codigo muerto, y es cuando mas sirve
+    que la pantalla lo diga.
+
+    Se separo despues de publicar 625 avisos en vez de 3.195 por usar el universo
+    chico en los dos lados (10-08-2026).
+    """
+    reem = _frame([_reem(clave_precio="VIVO", reemplaza_a=["MUERTO"])])
+    # Solo VIVO tiene movimiento; MUERTO existe en el catalogo pero no rota.
+    evaluables = ["25 VIVO"]
+    out = ampliar_mapeo_con_ford(_mapeo([]), reem, evaluables, VENTAS_VACIAS, FIN)
+    assert out.is_empty(), "MUERTO no se evalua: no hay nada que agrupar"
+
+    # Con el catalogo completo si se puede resolver el par para el aviso.
+    catalogo = ["25 VIVO", "25 MUERTO"]
+    out2 = ampliar_mapeo_con_ford(_mapeo([]), reem, catalogo, VENTAS_VACIAS, FIN)
+    assert out2.height == 2
+
+
 def test_mas_de_tres_reemplazos_no_se_truncan():
     """El mix solo admite Reem1/2/3; la lista de FORD trae cadenas mas largas y
     cortarlas partiria un grupo real en dos."""

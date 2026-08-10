@@ -498,16 +498,36 @@ def publicar_reemplazos(fuentes: dict) -> dict | None:
     reem = fuentes.get("reemplazos_ford")
     mapeo = fuentes.get("mapeo")
     dim = fuentes.get("dim_producto")
-    if reem is None or reem.is_empty() or dim is None:
+    if reem is None or reem.is_empty():
         return None
     base, email, password = _credenciales()
     if not email or not password:
         return None
 
+    from ..motor import lectores_excel as _lx
     from ..motor.lectores_excel import clave_precio
 
+    # El universo es el maestro COMPLETO (409.626 codigos), no `dim_producto`
+    # (~34.000): ese trae solo lo que el motor evalua, o sea lo que tiene venta o
+    # stock. Justo al reves de lo que hace falta aca: un codigo dado de baja que
+    # no se vende ni se stockea es el perfil exacto de un codigo muerto, y es
+    # cuando mas sirve el aviso. Con dim_producto se publicaban 625 avisos en vez
+    # de ~3.200 y faltaban precisamente esos. (Para AGRUPAR si corresponde el
+    # universo chico, y por eso `ampliar_mapeo_con_ford` recibe otro conjunto.)
+    ruta_maestro = _buscar("catalogo", obligatorio=False)
+    universo = None
+    if ruta_maestro is not None:
+        try:
+            universo = _lx.leer_listado_maestro(ruta_maestro).select("Producto").unique()
+        except Exception as e:  # noqa: BLE001
+            print(f"  (no se pudo leer el maestro para los reemplazos: {e})")
+    if universo is None:
+        if dim is None:
+            return None
+        universo = dim.select("Producto").unique()
+
     por_clave: dict[str, str] = {}
-    for (p,) in dim.select("Producto").unique().iter_rows():
+    for (p,) in universo.iter_rows():
         k = clave_precio(p)
         if k and k not in por_clave:
             por_clave[k] = p
