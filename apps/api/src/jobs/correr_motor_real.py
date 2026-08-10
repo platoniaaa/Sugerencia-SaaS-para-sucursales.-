@@ -482,6 +482,91 @@ def publicar_stock_unificado() -> dict | None:
         return None
 
 
+def publicar_reemplazos(fuentes: dict) -> dict | None:
+    """Sube la cadena de reemplazo de FORD para los codigos que Curifor tiene.
+
+    La AGRUPACION (sumar el stock del viejo con el del nuevo) ya la hizo el motor
+    al armar el mapeo. Esto es lo otro: avisarle al comprador que el codigo que le
+    pidieron esta descontinuado y cual es el vigente, incluso cuando ese par no se
+    agrupo. Por eso viaja `agrupado`, que distingue los dos casos.
+
+    Se publica solo lo que toca al maestro de Curifor: de los 39.622 codigos de la
+    lista, el resto no se puede mostrar en ninguna pantalla.
+    """
+    import httpx
+
+    reem = fuentes.get("reemplazos_ford")
+    mapeo = fuentes.get("mapeo")
+    dim = fuentes.get("dim_producto")
+    if reem is None or reem.is_empty() or dim is None:
+        return None
+    base, email, password = _credenciales()
+    if not email or not password:
+        return None
+
+    from ..motor.lectores_excel import clave_precio
+
+    por_clave: dict[str, str] = {}
+    for (p,) in dim.select("Producto").unique().iter_rows():
+        k = clave_precio(p)
+        if k and k not in por_clave:
+            por_clave[k] = p
+    # Producto -> master, para saber si el par quedo efectivamente en un grupo.
+    grupo = (
+        dict(mapeo.select(["Producto", "Producto_Master"]).iter_rows())
+        if mapeo is not None
+        else {}
+    )
+
+    filas = []
+    for f in reem.iter_rows(named=True):
+        yo = por_clave.get(f["clave_precio"])
+        if not yo:
+            continue
+        vigente = por_clave.get(f["clave_vigente"]) if f["clave_vigente"] else None
+        viejos = [por_clave[k] for k in (f["reemplaza_a"] or []) if k in por_clave]
+        viejos = [v for v in viejos if v != yo]
+        if not vigente and not f["sku_vigente"] and not viejos:
+            continue
+        # Agrupado = el motor los dejo bajo el mismo master. Se mira contra el
+        # vigente si lo hay, y si no contra el primero de los que esta pieza
+        # reemplazo: en las dos direcciones el grupo es el mismo.
+        otro = vigente or (viejos[0] if viejos else None)
+        agrupado = bool(
+            otro and yo in grupo and otro in grupo and grupo[yo] == grupo[otro]
+        )
+        filas.append({
+            "producto": yo,
+            "reemplazado_por": vigente,
+            "reemplazado_por_ford": f["sku_vigente"],
+            "cadena": f["cadena"],
+            "reemplaza_a": viejos,
+            "sucesor_confirmado": bool(f["sucesor_confirmado"]),
+            "agrupado": agrupado,
+            "aviso": f["aviso"],
+        })
+    if not filas:
+        return None
+
+    try:
+        with httpx.Client(timeout=300) as c:
+            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
+            r.raise_for_status()
+            token = r.json()["token"]
+            r = c.post(
+                f"{base}/api/admin/reemplazos-ford",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"filas": filas},
+            )
+            r.raise_for_status()
+            out = r.json()
+            out["agrupados"] = sum(1 for f in filas if f["agrupado"])
+            return out
+    except Exception as e:  # noqa: BLE001 - publicar esto nunca debe romper la carga
+        print(f"  (no se pudieron publicar los reemplazos: {e})")
+        return None
+
+
 def publicar_sku_proveedor(fuentes: dict) -> dict | None:
     """Sube la equivalencia codigo de Curifor -> SKU del portal del proveedor.
 
@@ -774,6 +859,12 @@ def run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
         sku = publicar_sku_proveedor(globals().get("_ULTIMAS_FUENTES") or {})
         if sku:
             print(f"  equivalencias de SKU publicadas: {sku.get('filas_cargadas')} ({sku.get('proveedor')}).")
+        # Que codigo esta descontinuado y cual lo reemplaza, para que el comprador
+        # no compre uno muerto. La agrupacion ya ocurrio arriba, al armar el mapeo.
+        rep = publicar_reemplazos(globals().get("_ULTIMAS_FUENTES") or {})
+        if rep:
+            print(f"  reemplazos FORD publicados: {rep.get('filas_cargadas')} filas "
+                  f"({rep.get('agrupados')} agrupan stock, el resto solo avisa).")
     else:
         print(
             f"SOMBRA: paridad {resultado['paridad_pct']}% "

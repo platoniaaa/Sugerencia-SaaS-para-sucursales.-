@@ -354,10 +354,20 @@ def cargar_fuentes_reales(
         try:
             reemplazos = _lx.leer_reemplazos_ford(precios_ford_xlsx)
             if not reemplazos.is_empty():
+                # Para AGRUPAR solo sirven los codigos que el motor evalua: los que
+                # tienen venta o stock. Agrupar uno que no aparece en ninguna de las
+                # dos no cambia ni una fila del sugerido, y ensancharia el conjunto
+                # sin razon. (Para AVISAR, en cambio, se publica contra el maestro
+                # completo: el vendedor puede pedir cualquier codigo del catalogo.)
                 conocidos = pl.concat([
                     fuentes["mapeo"].select(pl.col("Producto")),
                     ventas_crudo.select(pl.col("Producto")),
                     stock.select(pl.col("Producto")),
+                    *(
+                        [fuentes["dim_producto"].select(pl.col("Producto"))]
+                        if "dim_producto" in fuentes
+                        else []
+                    ),
                 ]).get_column("Producto").drop_nulls().unique()
                 antes = fuentes["mapeo"].height
                 fuentes["mapeo"] = dim.ampliar_mapeo_con_ford(
