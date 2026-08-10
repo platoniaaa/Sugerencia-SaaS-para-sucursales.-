@@ -640,6 +640,55 @@ def publicar_sku_proveedor(fuentes: dict) -> dict | None:
         return None
 
 
+def publicar_proveedor_producto(fuentes: dict) -> dict | None:
+    """Sube a quien se le compra cada producto, deducido de las OC historicas.
+
+    El proveedor ya viaja dentro del sugerido, pero solo para los pares
+    producto x sucursal que el motor evalua. Las filas que la plataforma agrega
+    despues —minimo InStock y sugerencias manuales— quedaban con la celda vacia
+    aunque el producto tuviera decenas de OC: `25 KV6Z9155D` tenia 78 ordenes a
+    FORD y salia en blanco. Y sin proveedor la linea no entra a ningun carro de
+    compra, asi que no era solo cosmetico.
+
+    Va sobre TODO el seguimiento (no sobre los pares del sugerido) justamente
+    para cubrir lo que el motor no calcula. La regla de desempate es la misma que
+    usa el sugerido: se comparte el codigo en `lead_time.proveedor_por_producto`.
+    """
+    import httpx
+
+    seg = fuentes.get("seguimiento")
+    if seg is None or seg.is_empty():
+        return None
+    base, email, password = _credenciales()
+    if not email or not password:
+        return None
+
+    from ..motor.lead_time import proveedor_por_producto
+
+    filas = [
+        {"producto": p, "proveedor": prov}
+        for p, prov in proveedor_por_producto(seg).iter_rows()
+        if p and prov
+    ]
+    if not filas:
+        return None
+    try:
+        with httpx.Client(timeout=300) as c:
+            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
+            r.raise_for_status()
+            token = r.json()["token"]
+            r = c.post(
+                f"{base}/api/admin/proveedor-producto",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"filas": filas},
+            )
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:  # noqa: BLE001 - nunca debe romper la carga del sugerido
+        print(f"  (no se pudo publicar el proveedor por producto: {e})")
+        return None
+
+
 def _guardar_lead_time(fuentes: dict) -> Path | None:
     """Escribe el lead time por proveedor (global) y por proveedor x sucursal."""
     import polars as pl
@@ -879,6 +928,12 @@ def run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
         sku = publicar_sku_proveedor(globals().get("_ULTIMAS_FUENTES") or {})
         if sku:
             print(f"  equivalencias de SKU publicadas: {sku.get('filas_cargadas')} ({sku.get('proveedor')}).")
+        # A quien se le compra cada producto. El sugerido ya lo trae para lo que
+        # el motor calcula; esto cubre el resto (InStock, manuales), que salia sin
+        # proveedor y por lo tanto fuera del carro de compra.
+        prov = publicar_proveedor_producto(globals().get("_ULTIMAS_FUENTES") or {})
+        if prov:
+            print(f"  proveedor por producto publicado: {prov.get('filas_cargadas')} productos.")
         # Que codigo esta descontinuado y cual lo reemplaza, para que el comprador
         # no compre uno muerto. La agrupacion ya ocurrio arriba, al armar el mapeo.
         rep = publicar_reemplazos(globals().get("_ULTIMAS_FUENTES") or {})

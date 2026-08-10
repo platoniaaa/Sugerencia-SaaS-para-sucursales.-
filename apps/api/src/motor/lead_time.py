@@ -19,22 +19,65 @@ import polars as pl
 from . import parametros as P
 
 
-def _proveedor_lt(abc: pl.DataFrame, seg: pl.DataFrame) -> pl.DataFrame:
-    """MIN(razón social) con jerarquía suc/global, filtrado y sin filtrar motivo."""
-    con_prov = seg.filter(pl.col("RazonSocial").is_not_null())
-    filtrado = con_prov.filter(
-        (pl.col("Origen") != P.ORIGEN_CURIFOR_NACIONAL) | (pl.col("Motivo").str.to_lowercase() == P.MOTIVO_REPOSICION)
+def _con_proveedor(seg: pl.DataFrame) -> pl.DataFrame:
+    """Las OC que traen razón social: lo único de donde sale un proveedor."""
+    return seg.filter(pl.col("RazonSocial").is_not_null())
+
+
+def _solo_reposicion(df: pl.DataFrame) -> pl.DataFrame:
+    """Descarta las compras nacionales que no son de reposición.
+
+    Una OC de garantía o de un pedido puntual dice a quién se le compró esa vez,
+    no a quién se le repone. El importado y Frontera no se filtran porque su
+    motivo no viene informado.
+    """
+    return df.filter(
+        (pl.col("Origen") != P.ORIGEN_CURIFOR_NACIONAL)
+        | (pl.col("Motivo").str.to_lowercase() == P.MOTIVO_REPOSICION)
     )
 
-    def _min_por(df, keys, nombre):
-        # MIN de DAX sobre texto es case-insensitive; el min() de polars ordena
-        # por bytes (mayúsculas < minúsculas). Ordenar por clave en minúscula.
-        return df.group_by(keys).agg(
-            pl.col("RazonSocial")
-            .sort_by(pl.col("RazonSocial").str.to_lowercase())
-            .first()
-            .alias(nombre)
-        )
+
+def _min_por(df: pl.DataFrame, keys: list[str], nombre: str) -> pl.DataFrame:
+    # MIN de DAX sobre texto es case-insensitive; el min() de polars ordena
+    # por bytes (mayúsculas < minúsculas). Ordenar por clave en minúscula.
+    return df.group_by(keys).agg(
+        pl.col("RazonSocial")
+        .sort_by(pl.col("RazonSocial").str.to_lowercase())
+        .first()
+        .alias(nombre)
+    )
+
+
+def proveedor_por_producto(seg: pl.DataFrame) -> pl.DataFrame:
+    """A quién se le compra cada producto, sin mirar la sucursal.
+
+    Es el escalón GLOBAL de la misma jerarquía que usa `_proveedor_lt`: primero
+    con el filtro de motivo, y si ahí no hay nada, sin filtrarlo. Se comparte el
+    código a propósito — si las dos reglas se separaran, la plataforma mostraría
+    un proveedor y el sugerido otro para el mismo repuesto.
+
+    Se calcula sobre TODO el seguimiento, no sobre los pares del sugerido: sirve
+    para las filas que el motor no evalúa (mínimo InStock, sugerencias manuales),
+    que salían sin proveedor aunque el producto tuviera decenas de OC.
+
+    Devuelve `Producto`, `proveedor`.
+    """
+    con_prov = _con_proveedor(seg)
+    if con_prov.is_empty():
+        return pl.DataFrame(schema={"Producto": pl.Utf8, "proveedor": pl.Utf8})
+    return (
+        _min_por(con_prov, ["Producto"], "provFull")
+        .join(_min_por(_solo_reposicion(con_prov), ["Producto"], "provRepo"),
+              on="Producto", how="left")
+        .with_columns(pl.coalesce("provRepo", "provFull").alias("proveedor"))
+        .select(["Producto", "proveedor"])
+    )
+
+
+def _proveedor_lt(abc: pl.DataFrame, seg: pl.DataFrame) -> pl.DataFrame:
+    """MIN(razón social) con jerarquía suc/global, filtrado y sin filtrar motivo."""
+    con_prov = _con_proveedor(seg)
+    filtrado = _solo_reposicion(con_prov)
 
     combos = abc.select(["producto_master", "sucursal_final"])
     r = (
@@ -56,10 +99,8 @@ def _proveedor_lt(abc: pl.DataFrame, seg: pl.DataFrame) -> pl.DataFrame:
 
 def _proveedor_oc_reciente(abc: pl.DataFrame, seg: pl.DataFrame) -> pl.DataFrame:
     """Razón social de la OC más reciente (Fecha OC desc, N OC desc) por par."""
-    valido = seg.filter(
-        ((pl.col("Origen") != P.ORIGEN_CURIFOR_NACIONAL) | (pl.col("Motivo").str.to_lowercase() == P.MOTIVO_REPOSICION))
-        & pl.col("RazonSocial").is_not_null()
-        & pl.col("FechaOC").is_not_null()
+    valido = _solo_reposicion(_con_proveedor(seg)).filter(
+        pl.col("FechaOC").is_not_null()
     ).with_columns(pl.col("NOC").fill_null(-1))
     # OC más reciente por par: ordenar dentro del grupo (Fecha OC desc, N OC desc).
     reciente = valido.group_by(["Producto", "SucursalID"]).agg(
