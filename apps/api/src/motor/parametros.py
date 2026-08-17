@@ -109,6 +109,14 @@ CICLO_ORDEN_DIAS = 5          # compra directa al proveedor
 CICLO_ORDEN_DIAS_CD = 5       # antes 3; unificado a 5 (ver nota arriba)
 LT_FALLBACK_DIAS = 8          # sin proveedor o sin historial de OC
 
+# Dias que tarda Abastecimiento en gestionar la compra, ANTES de que exista la OC.
+# El lead time se mide desde la fecha de la OC hasta la recepcion, asi que ese
+# tramo -revisar el sugerido, decidir, emitir- nunca estuvo contado: el modelo
+# asumia que la orden sale el mismo dia que se detecta la necesidad.
+# Pedido por Abastecimiento (13-ago-2026). Se suma al LT del PROVEEDOR; el
+# traslado CD -> sucursal no lo lleva, porque ahi no hay compra que gestionar.
+LT_GESTION_ABASTECIMIENTO_DIAS = 1
+
 # --- Cálculo del lead time por proveedor desde el seguimiento (OC -> P/E) --------
 # Réplica de las tablas 'Lead Time Proveedor' y 'Lead Time Proveedor Sucursal':
 # por proveedor (y proveedor+sucursal) se toman los días OC->P/E de las OCs

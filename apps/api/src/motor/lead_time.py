@@ -143,10 +143,16 @@ def calcular_lead_time(
     ).join(ltg, left_on="proveedor_lt", right_on="Razon Social Proveedor", how="left")
 
     lt = pl.coalesce("lt_spec", "lt_global")
+    # Se suma la gestion de Abastecimiento: el LT medido va de la fecha de la OC a
+    # la recepcion, asi que el tramo previo -revisar el sugerido, decidir, emitir la
+    # orden- no estaba en ninguna parte y el modelo asumia que la OC sale el mismo
+    # dia que aparece la necesidad. Va tambien sobre el fallback: cuando no hay
+    # historial el proveedor se desconoce, pero la gestion ocurre igual.
+    gestion = float(P.LT_GESTION_ABASTECIMIENTO_DIAS)
     r = r.with_columns(
         pl.when(lt.is_null() | pl.col("proveedor_lt").is_null())
-        .then(pl.lit(float(P.LT_FALLBACK_DIAS)))
-        .otherwise(lt)
+        .then(pl.lit(float(P.LT_FALLBACK_DIAS) + gestion))
+        .otherwise(lt + gestion)
         .alias("lead_time_dias"),
         pl.when(pl.col("lt_spec").is_not_null())
         .then(pl.lit("Por sucursal"))

@@ -10,6 +10,7 @@ Si algún cambio futuro al motor rompe la paridad, estos tests fallan señalando
 etapa y las filas afectadas. Para regenerar los fixtures: `python -m tests_motor.regenerar_fixtures`.
 """
 import math
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 
@@ -42,8 +43,20 @@ def fuentes():
     return pipeline.cargar_fuentes(FIXT)
 
 
-@pytest.fixture(scope="module")
-def etapas(fuentes):
+@contextmanager
+def _gestion(dias: int):
+    """Fija los dias de gestion de Abastecimiento mientras dure el bloque."""
+    from src.motor import parametros as P
+
+    original = P.LT_GESTION_ABASTECIMIENTO_DIAS
+    P.LT_GESTION_ABASTECIMIENTO_DIAS = dias
+    try:
+        yield
+    finally:
+        P.LT_GESTION_ABASTECIMIENTO_DIAS = original
+
+
+def _calcular_etapas(fuentes):
     abc = clasificacion_abc.calcular_abc(fuentes["ventas"], fuentes["mapeo"], fuentes["dim_producto"], FIN)
     dem = demanda_mod.calcular_demanda(fuentes["ventas"], fuentes["mapeo"], fuentes["dim_producto"], abc, FIN)
     lt = lead_time_mod.calcular_lead_time(
@@ -56,6 +69,24 @@ def etapas(fuentes):
     )
     tr = traslados_mod.calcular_traslados(sug, fuentes["mapeo"], fuentes["stock"], fuentes["stock_frontera"], fuentes["dim_sucursal"])
     return {"abc": abc, "dem": dem, "lt": lt, "ss": ss, "sug": sug, "tr": tr}
+
+
+@pytest.fixture(scope="module")
+def etapas(fuentes):
+    """Las etapas calculadas SIN el dia de gestion de Abastecimiento.
+
+    Los goldens son la foto del DAX de julio, que no lleva ese dia. Compararlos
+    contra un motor que si lo suma haria fallar TODAS las filas y perderiamos la
+    unica red que avisa cuando un cambio rompe el resto del calculo, que es
+    justamente para lo que sirven.
+
+    A diferencia del ciclo de orden 3->5 —que solo movio las filas abastecidas por
+    CD y por eso se pudo excluir ese subconjunto con `_solo_directo`—, el dia de
+    gestion afecta a todas, asi que no quedaria nada contra que comparar. La regla
+    nueva se valida aparte, en `test_gestion_abastecimiento_suma_un_dia`.
+    """
+    with _gestion(0):
+        return _calcular_etapas(fuentes)
 
 
 def _motor_key(df: pl.DataFrame) -> pl.DataFrame:
@@ -102,6 +133,59 @@ def _solo_directo(golden: pl.DataFrame, etapas) -> pl.DataFrame:
         .unique()
     )
     return golden.join(cd, on=CLAVE, how="anti")
+
+
+def test_gestion_abastecimiento_suma_un_dia(fuentes):
+    """Regla nueva (Abastecimiento, 13-ago): el LT del proveedor lleva +1 día.
+
+    El lead time se mide desde la fecha de la OC hasta la recepción, así que el
+    tramo previo —revisar el sugerido, decidir, emitir la orden— no estaba contado
+    en ninguna parte: el modelo asumía que la OC sale el mismo día que aparece la
+    necesidad.
+
+    Se verifica comparando el motor consigo mismo con y sin el día, que es la única
+    forma de aislar el efecto: los goldens no lo tienen.
+    """
+    with _gestion(0):
+        sin = _calcular_etapas(fuentes)["lt"]
+    with _gestion(1):
+        con = _calcular_etapas(fuentes)["lt"]
+
+    j = sin.select(["producto_master", "sucursal_final", "lead_time_dias", "lt_efectivo",
+                    "lt_cd_a_sucursal_dias", "abastece_cd"]).join(
+        con.select(["producto_master", "sucursal_final", "lead_time_dias", "lt_efectivo",
+                    "lt_cd_a_sucursal_dias"]),
+        on=["producto_master", "sucursal_final"], how="inner", suffix="_con",
+    )
+    assert j.height > 0
+
+    # El LT del proveedor sube exactamente 1 día en TODAS las filas.
+    d = j.select((pl.col("lead_time_dias_con") - pl.col("lead_time_dias")).alias("d"))
+    distintos = d.filter((pl.col("d") - 1.0).abs() > 1e-9)
+    assert distintos.height == 0, f"{distintos.height} filas no subieron exactamente 1 día"
+
+    # El traslado CD -> sucursal NO lo lleva: ahí no hay compra que gestionar.
+    cd = j.select(
+        (pl.col("lt_cd_a_sucursal_dias_con") - pl.col("lt_cd_a_sucursal_dias")).alias("d")
+    ).filter(pl.col("d").abs() > 1e-9)
+    assert cd.height == 0, f"{cd.height} filas cambiaron el LT del CD, que no debe moverse"
+
+    # Y por lo mismo, el LT EFECTIVO de una fila abastecida por CD tampoco cambia.
+    por_cd = j.filter(pl.col("abastece_cd") == "Si").select(
+        (pl.col("lt_efectivo_con") - pl.col("lt_efectivo")).alias("d")
+    ).filter(pl.col("d").abs() > 1e-9)
+    assert por_cd.height == 0, (
+        f"{por_cd.height} filas de CD movieron su LT efectivo: la gestión se está "
+        "sumando donde no corresponde"
+    )
+
+    # Las de compra directa sí: son las que gatillan la orden al proveedor.
+    directas = j.filter(pl.col("abastece_cd") != "Si")
+    if directas.height:
+        d_dir = directas.select(
+            (pl.col("lt_efectivo_con") - pl.col("lt_efectivo")).alias("d")
+        ).filter((pl.col("d") - 1.0).abs() > 1e-9)
+        assert d_dir.height == 0, f"{d_dir.height} filas de compra directa no subieron 1 día"
 
 
 def test_ciclo_orden_cd_es_5(etapas):
