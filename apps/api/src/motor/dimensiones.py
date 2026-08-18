@@ -315,6 +315,10 @@ def ampliar_mapeo_con_ford(
     mapeo: pl.DataFrame,
     reemplazos_ford: pl.DataFrame,
     productos: pl.Series | list[str],
+    # `ventas` y `fin_mes_cerrado` quedaron SIN USO al pasar el master al codigo
+    # vigente (antes se elegia por venta de 6 meses). Se conservan en la firma para
+    # no tocar 17 llamadas en el mismo commit que cambia la regla de negocio; si la
+    # regla se mantiene, corresponde sacarlos.
     ventas: pl.DataFrame,
     fin_mes_cerrado: date,
 ) -> pl.DataFrame:
@@ -392,23 +396,24 @@ def ampliar_mapeo_con_ford(
     ]
     grupo = pl.DataFrame(filas, schema={"master_orig": pl.Utf8, "Producto": pl.Utf8}).unique()
 
-    # Master del grupo = el que mas vendio en 6 meses; desempata el original.
-    ini6 = _mes_menos(fin_mes_cerrado, 6)
-    v = (
-        ventas.filter((pl.col("Fecha") >= ini6) & (pl.col("Fecha") < fin_mes_cerrado))
-        .group_by("Producto").agg(pl.col("Cantidad").sum().alias("ventas"))
-    )
-    g = grupo.join(v, on="Producto", how="left").with_columns(
-        pl.col("ventas").fill_null(0),
-        (pl.col("Producto") == pl.col("master_orig")).cast(pl.Int8).alias("es_master"),
-    )
-    elegido = (
-        g.sort(["ventas", "es_master", "Producto"], descending=[True, True, True])
-        .group_by("master_orig").agg(pl.col("Producto").first().alias("Producto_Master"))
-    )
+    # Master del grupo = el codigo VIGENTE de FORD, no el que mas vendio.
+    #
+    # Antes se elegia por venta de 6 meses, igual que en el mix. El problema es que
+    # el codigo viejo casi siempre vendio mas —lleva anos en catalogo— asi que el
+    # grupo terminaba representado por una pieza que FORD ya no fabrica, y la orden
+    # de compra salia con ese codigo. Paso en produccion: 25 MB3Z19N619C en Chillan
+    # pidiendo 5 unidades ($111.137) de un codigo dado de baja, teniendo el vigente
+    # 19 MB3Z19N619A en el maestro.
+    #
+    # Elegir por ventas tiene sentido en el mix, donde los codigos de un grupo son
+    # equivalentes entre si y ninguno esta muerto. Aca no: FORD ya dijo cual sigue
+    # vivo, y esa respuesta no se vota.
+    #
+    # El stock y la demanda del viejo se siguen sumando al grupo (eso no cambia),
+    # asi que lo que hay en bodega se consume primero y recien cuando el stock cruza
+    # el punto de pedido se compra, ya con el codigo correcto.
     nuevo = (
-        grupo.join(elegido, on="master_orig", how="left")
-        .select(["Producto", "Producto_Master"])
+        grupo.select(["Producto", pl.col("master_orig").alias("Producto_Master")])
         .unique(subset=["Producto"], keep="first")
     )
     # El mix va primero: si algo se coló, gana el grupo que ya existía.

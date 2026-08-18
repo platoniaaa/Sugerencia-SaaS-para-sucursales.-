@@ -167,17 +167,61 @@ def test_en_una_cadena_encadenada_solo_sobrevive_el_primer_grupo():
     assert "25 CCC" not in dict(out.rows())
 
 
-def test_el_master_del_grupo_es_el_que_mas_vendio():
+def test_el_master_del_grupo_es_el_vigente_aunque_venda_menos():
+    """La orden de compra tiene que salir con el codigo que FORD sigue fabricando.
+
+    Antes el master se elegia por venta de 6 meses. El codigo viejo casi siempre
+    vende mas -lleva anos en catalogo-, asi que el grupo quedaba representado por
+    una pieza descontinuada y se compraba esa. Paso en produccion con
+    25 MB3Z19N619C (Chillan, 5 unidades, $111.137) teniendo vigente el
+    19 MB3Z19N619A.
+
+    Elegir por ventas sigue siendo correcto en el mix, donde los codigos de un
+    grupo son equivalentes y ninguno esta muerto. Aca no: FORD ya dijo cual sigue
+    vivo.
+    """
     reem = _frame([_reem(clave_precio="NUEVO1", reemplaza_a=["VIEJO1"])])
     ventas = pl.DataFrame({
         "Producto": ["25 NUEVO1", "25 VIEJO1"],
         "Fecha": [date(2026, 5, 1), date(2026, 5, 1)],
-        "Cantidad": [3.0, 40.0],
+        "Cantidad": [3.0, 40.0],  # el viejo vende 13 veces mas
     })
     out = ampliar_mapeo_con_ford(
         _mapeo([]), reem, ["25 NUEVO1", "25 VIEJO1"], ventas, FIN
     )
-    assert set(dict(out.rows()).values()) == {"25 VIEJO1"}
+    assert set(dict(out.rows()).values()) == {"25 NUEVO1"}
+
+
+def test_el_viejo_sigue_en_el_grupo_para_que_su_stock_cuente():
+    """Cambia QUE se compra, no que se agrupa.
+
+    El stock y la demanda del codigo viejo se siguen sumando al grupo: eso es lo
+    que hace que primero se consuma lo que hay en bodega y recien al cruzar el
+    punto de pedido se compre, ya con el codigo vigente. Si el viejo saliera del
+    grupo, su stock dejaria de contar y se compraria de mas.
+    """
+    reem = _frame([_reem(clave_precio="NUEVO1", reemplaza_a=["VIEJO1", "VIEJO2"])])
+    out = ampliar_mapeo_con_ford(
+        _mapeo([]), reem, ["25 NUEVO1", "25 VIEJO1", "25 VIEJO2"], VENTAS_VACIAS, FIN
+    )
+    d = dict(out.rows())
+    assert d == {"25 NUEVO1": "25 NUEVO1", "25 VIEJO1": "25 NUEVO1", "25 VIEJO2": "25 NUEVO1"}
+
+
+def test_el_sucesor_confirmado_tambien_manda_como_master():
+    """La otra direccion de la lista: el codigo consultado esta descontinuado y
+    FORD nombra su sucesor. El master tiene que ser el sucesor."""
+    reem = _frame([_reem(clave_precio="VIEJO1", clave_vigente="NUEVO1",
+                         sucesor_confirmado=True)])
+    ventas = pl.DataFrame({
+        "Producto": ["25 VIEJO1"],
+        "Fecha": [date(2026, 5, 1)],
+        "Cantidad": [99.0],
+    })
+    out = ampliar_mapeo_con_ford(
+        _mapeo([]), reem, ["25 NUEVO1", "25 VIEJO1"], ventas, FIN
+    )
+    assert set(dict(out.rows()).values()) == {"25 NUEVO1"}
 
 
 def test_codigos_que_curifor_no_tiene_se_ignoran():
