@@ -71,7 +71,11 @@ def calcular_demanda(
     meses12 = _meses_ventana(_inicio_ventana(fin_mes_cerrado, P.VENTANA_M12), 12)
 
     # --- DemLocal: por clase LOCAL, ventana 6m (A/B) o 12m (C/D) ---
-    grupos = abc.select([*local, "clasificacion_abc", "clasificacion_abc_agregada"])
+    grupos = abc.select([*local, "clasificacion_abc", "clasificacion_abc_agregada",
+                         "clasificacion_abc_agregada_d"])
+    # OJO: este C/D es la VENTANA de demanda (A/B miran 6 meses, C/D miran 12), no
+    # tiene nada que ver con la centralizacion en el CD de mas abajo. Son dos reglas
+    # distintas que usan las mismas letras.
     g_ab = grupos.filter(pl.col("clasificacion_abc").is_in(["A", "B"])).select(local)
     g_cd = grupos.filter(pl.col("clasificacion_abc").is_in(["C", "D"])).select(local)
 
@@ -81,15 +85,28 @@ def calcular_demanda(
 
     base = grupos.join(dem_local, on=local, how="left")
 
-    # --- CD con clase agregada A/B: serie 12m consolidada + winsorizada ---
+    # --- CD: serie 12m consolidada + winsorizada ---
+    #
+    # El CD no tiene demanda propia: se le asigna la SUMA de la venta de las
+    # sucursales que abastece, porque compra por ellas para despues repartirles.
+    # De ahi que sus ordenes sean grandes aunque en el CD casi no se venda.
+    #
+    # La condicion tiene que ser LA MISMA que usan `lead_time` (para decidir
+    # `abastece_cd`) y `clasificacion_abc` (para crear las filas del CD). Cuando se
+    # cambio la regla en esos dos y aca no, el CD quedo sumando la venta de
+    # sucursales que ya no atendia: 95 de 265 productos consolidaban mas sucursales
+    # de las que abastecian ($12,2M), y algunos compraban sin tener a quien mandarle.
+    col_agregada = ("clasificacion_abc_agregada_d" if P.CENTRALIZACION_AGREGADA_SOLO_D
+                    else "clasificacion_abc_agregada")
     cd_ab = grupos.filter(
-        (pl.col("sucursal_final") == P.CD_ID) & pl.col("clasificacion_abc_agregada").is_in(["A", "B"])
+        (pl.col("sucursal_final") == P.CD_ID) & pl.col(col_agregada).is_in(["A", "B"])
     ).select("producto_master").unique()
 
     if cd_ab.height:
-        # sucursales que el CD consolida: clase local C/D (por producto).
+        # Las sucursales cuya venta se suma: las mismas que el CD abastece.
         sucsD = grupos.filter(
-            (pl.col("sucursal_final") != P.CD_ID) & pl.col("clasificacion_abc").is_in(["C", "D"])
+            (pl.col("sucursal_final") != P.CD_ID)
+            & pl.col("clasificacion_abc").is_in(list(P.CENTRALIZACION_CLASES_LOCALES))
         ).select(["producto_master", "sucursal_final"])
         consolidar = pl.concat([
             cd_ab.with_columns(pl.lit(P.CD_ID).alias("sucursal_final")),

@@ -99,3 +99,30 @@ def test_un_producto_sin_ninguna_sucursal_d_no_queda_nulo():
     abc = _abc(filas)
     v = _clase(abc, "CUATRO", "LINDEROS", "clasificacion_abc_agregada_d")
     assert v == "D", f"esperaba D, salio {v!r}"
+
+
+def test_los_tres_lugares_usan_la_misma_regla():
+    """La condicion de centralizacion vive en TRES modulos y tienen que coincidir.
+
+    - `clasificacion_abc` decide que productos tienen fila en el CD.
+    - `lead_time` decide `abastece_cd` (a quien le manda el CD).
+    - `demanda` decide de que sucursales SUMA la venta para saber cuanto compra.
+
+    Ya paso dos veces que se cambiara uno y no los otros. Con la regla de
+    centralizacion (ago-2026) quedaron 95 de 265 productos donde el CD sumaba la
+    venta de mas sucursales de las que abastecia -$12,2M-, y algunos compraban sin
+    tener a quien mandarles. Este test no valida el calculo: valida que ninguno de
+    los tres se quede con la condicion escrita a mano.
+    """
+    from pathlib import Path
+
+    raiz = Path(__file__).resolve().parents[1] / "src" / "motor"
+    for archivo in ("clasificacion_abc.py", "lead_time.py", "demanda.py"):
+        txt = (raiz / archivo).read_text(encoding="utf-8")
+        assert "CENTRALIZACION_CLASES_LOCALES" in txt, (
+            f"{archivo} no lee CENTRALIZACION_CLASES_LOCALES: si tiene la lista de "
+            "clases escrita a mano, se desincroniza del resto sin que nada avise"
+        )
+        assert "CENTRALIZACION_AGREGADA_SOLO_D" in txt, (
+            f"{archivo} no lee CENTRALIZACION_AGREGADA_SOLO_D"
+        )
