@@ -43,6 +43,20 @@ NC_STD = {
 # 1) LINDEROS con Tipo-Venta "VTA MOVIL" -> "LINDEROS VTA MOVIL"
 # 2) fusiones directas de sucursal
 # 3) si el resultado cae en ESPECIALES_CD -> CD_ID
+# Rancagua 2 ES una sucursal distinta (Abastecimiento, 18-ago-2026) y aca sigue
+# fusionada A PROPOSITO: separarla se probó y hace comprar de mas.
+#
+# El sugerido solo crea filas para productos CON DEMANDA en la sucursal. Rancagua 2
+# vende 1.223 lineas contra 20.330 de Rancagua, asi que al separarla quedaron 199
+# filas: de los 456 productos con stock en su bodega, solo 7 tenian fila. Las otras
+# 5.104 unidades quedaban invisibles para el modelo -stock real que existe y que
+# nadie descuenta-, y el sugerido total subia $4,3 millones.
+#
+# Separarla de verdad exige que el motor evalue una sucursal por su STOCK y no solo
+# por su venta. El parche con el intento esta en el historial de la sesion del
+# 18-ago-2026. Cuando se retome, hay que mirar tambien SUCURSALES_INSTOCK en la
+# plataforma: hoy Rancagua 2 esta cubierta por el minimo de pauta solo porque su
+# stock cuenta como de Rancagua.
 FUSIONES_SUCURSAL = {
     "RANCAGUA 2": "RANCAGUA",
 }

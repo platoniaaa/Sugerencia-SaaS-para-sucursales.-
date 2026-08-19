@@ -56,6 +56,18 @@ def _gestion(dias: int):
         P.LT_GESTION_ABASTECIMIENTO_DIAS = original
 
 
+@contextmanager
+def _como_el_dax():
+    """El motor con las reglas que tenia el DAX cuando se congelaron los goldens.
+
+    Hoy la unica es el dia de gestion de Abastecimiento, que se apaga aca para que
+    los goldens sigan validando TODO lo demas; la regla nueva tiene su propio test.
+    Cada divergencia que se agregue al motor se apaga en este mismo lugar.
+    """
+    with _gestion(0):
+        yield
+
+
 def _calcular_etapas(fuentes):
     abc = clasificacion_abc.calcular_abc(fuentes["ventas"], fuentes["mapeo"], fuentes["dim_producto"], FIN)
     dem = demanda_mod.calcular_demanda(fuentes["ventas"], fuentes["mapeo"], fuentes["dim_producto"], abc, FIN)
@@ -73,19 +85,18 @@ def _calcular_etapas(fuentes):
 
 @pytest.fixture(scope="module")
 def etapas(fuentes):
-    """Las etapas calculadas SIN el dia de gestion de Abastecimiento.
+    """Las etapas calculadas con las reglas del DAX (ver `_como_el_dax`).
 
-    Los goldens son la foto del DAX de julio, que no lleva ese dia. Compararlos
-    contra un motor que si lo suma haria fallar TODAS las filas y perderiamos la
-    unica red que avisa cuando un cambio rompe el resto del calculo, que es
-    justamente para lo que sirven.
+    Los goldens son la foto del DAX de julio. Cada divergencia deliberada que se le
+    agrega al motor se apaga aca, para que sigan validando TODO lo demas: son la
+    unica red que avisa cuando un cambio rompe algo que no se queria tocar.
 
     A diferencia del ciclo de orden 3->5 —que solo movio las filas abastecidas por
     CD y por eso se pudo excluir ese subconjunto con `_solo_directo`—, el dia de
-    gestion afecta a todas, asi que no quedaria nada contra que comparar. La regla
-    nueva se valida aparte, en `test_gestion_abastecimiento_suma_un_dia`.
+    gestion afecta a filas de todo el universo, asi que no quedaria nada contra que
+    comparar. Se valida aparte, en `test_gestion_abastecimiento_suma_un_dia`.
     """
-    with _gestion(0):
+    with _como_el_dax():
         return _calcular_etapas(fuentes)
 
 
@@ -186,6 +197,29 @@ def test_gestion_abastecimiento_suma_un_dia(fuentes):
             (pl.col("lt_efectivo_con") - pl.col("lt_efectivo")).alias("d")
         ).filter((pl.col("d") - 1.0).abs() > 1e-9)
         assert d_dir.height == 0, f"{d_dir.height} filas de compra directa no subieron 1 día"
+
+
+def test_rancagua_2_sigue_fusionada_en_rancagua(fuentes):
+    """Rancagua 2 ES una sucursal distinta, pero el motor la fusiona a proposito.
+
+    Se intento separarla el 18-ago-2026 y hace COMPRAR DE MAS. El sugerido solo
+    crea filas para productos con demanda en la sucursal: Rancagua 2 vende 1.223
+    lineas contra 20.330 de Rancagua, asi que de los 456 productos con stock en su
+    bodega solo 7 quedaban con fila. Las otras 5.104 unidades desaparecian del
+    modelo -stock real que nadie descuenta- y el sugerido total subia $4,3 millones.
+
+    Separarla exige que el motor evalue una sucursal por su STOCK y no solo por su
+    venta. Este test existe para que el dia que alguien lo intente de nuevo, falle
+    aca y lea el motivo antes de publicar.
+    """
+    etapas = _calcular_etapas(fuentes)
+    sucs = set(etapas["abc"]["sucursal_final"].unique().to_list())
+    assert "RANCAGUA 2" not in sucs, (
+        "Rancagua 2 aparece como sucursal propia. Si es intencional, hay que "
+        "resolver antes el stock huerfano: ver parametros.FUSIONES_SUCURSAL"
+    )
+    from src.motor import parametros as P
+    assert P.FUSIONES_SUCURSAL.get("RANCAGUA 2") == "RANCAGUA"
 
 
 def test_ciclo_orden_cd_es_5(etapas):

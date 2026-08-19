@@ -38,13 +38,18 @@ def preparar_ventas(
         pl.coalesce(pl.col("Producto_Master"), pl.col("Producto")).alias("producto_master")
     )
 
-    # SUCURSAL_FINAL: 1) LINDEROS+VTA MOVIL, 2) RANCAGUA 2, 3) especiales -> CD.
+    # SUCURSAL_FINAL: 1) LINDEROS+VTA MOVIL, 2) fusiones, 3) especiales -> CD.
+    # Las fusiones se leen de `P.FUSIONES_SUCURSAL` y no van escritas aca: tenerlas
+    # duplicadas fue lo que dejo a Rancagua 2 fusionada en las ventas despues de
+    # separarla en el mapeo de bodegas, con el stock en una sucursal y la demanda
+    # en otra (18-ago-2026).
     s0 = (
         pl.when((pl.col("SUCURSAL") == P.SUCURSAL_LINDEROS) & (pl.col("TipoVenta") == P.TIPO_VENTA_MOVIL))
         .then(pl.lit(P.SUCURSAL_LINDEROS_MOVIL))
-        .when(pl.col("SUCURSAL") == "RANCAGUA 2")
-        .then(pl.lit("RANCAGUA"))
-        .otherwise(pl.col("SUCURSAL"))
+        .otherwise(
+            pl.col("SUCURSAL").replace(P.FUSIONES_SUCURSAL) if P.FUSIONES_SUCURSAL
+            else pl.col("SUCURSAL")
+        )
     )
     v = v.with_columns(s0.alias("_s0")).with_columns(
         pl.when(pl.col("_s0").is_in(list(P.ESPECIALES_CD)))

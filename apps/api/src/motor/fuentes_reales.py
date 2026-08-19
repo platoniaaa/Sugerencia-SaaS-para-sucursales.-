@@ -58,6 +58,9 @@ STOCK_BODEGA_SUCURSAL = {
     "LINDEROS": "LINDEROS", "LO BLANCO": "LO BLANCO", "LO BLANCO 2": "LO BLANCO",
     "MALL PLAZA NORTE": "MALL PLAZA NORTE", "MALL PLAZA SUR": "MALL PLAZA SUR",
     "OVALLE": "OVALLE", "PE X REGULARIZAR": "PE X REGULARIZAR", "PE-FALTANTE": "PE FALTANTE",
+    # Rancagua 2 es una sucursal distinta, pero su stock sigue contando como de
+    # Rancagua a proposito: ver la nota en `parametros.FUSIONES_SUCURSAL`. Separarla
+    # aca sin que el motor evalue por stock deja 5.104 unidades invisibles.
     "PLACILLA": "PLACILLA", "RANCAGUA": "RANCAGUA", "RANCAGUA 2": "RANCAGUA",
     "RANCAGUA 3": "RANCAGUA", "ST_RANCAGUA": "RANCAGUA", "TALCA": "TALCA",
     "TALCA (2)": "TALCA (2)",
