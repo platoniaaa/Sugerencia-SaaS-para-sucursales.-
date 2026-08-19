@@ -6,7 +6,8 @@
 - ProveedorLT: mínimo alfabético de razón social en el seguimiento filtrado por
   motivo, con jerarquía suc → global → (sin filtro de motivo).
 - Lead Time Dias: LT del par (proveedor, sucursal) si hay muestra, si no el LT
-  global del proveedor, si no fallback 8.
+  global del proveedor, si no `P.LT_FALLBACK_DIAS` (3 desde ago-2026, antes 8).
+  A todos se les suma el dia de gestion de Abastecimiento.
 - LT CD a Sucursal: 1 día RM / 2 resto, con casos especiales.
 - Abastece CD: importado O (clase local D + A/B en la agregada de las sucursales
   D); en la fila CD, solo si es importado. Antes era "C/D local + agregada A/B"
@@ -160,7 +161,9 @@ def calcular_lead_time(
         .then(pl.lit("Por sucursal"))
         .when(pl.col("lt_global").is_not_null() & pl.col("proveedor_lt").is_not_null())
         .then(pl.lit("Global proveedor"))
-        .otherwise(pl.lit("Fallback 8 dias"))
+        # El texto lleva el numero del parametro: tenerlo escrito a mano hacia que
+        # dijera "Fallback 8 dias" al lado de una columna que mostraba otra cifra.
+        .otherwise(pl.lit(f"Fallback {int(P.LT_FALLBACK_DIAS)} dias"))
         .alias("lt_origen"),
     )
 
