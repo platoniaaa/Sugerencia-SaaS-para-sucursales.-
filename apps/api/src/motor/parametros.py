@@ -113,6 +113,23 @@ WINSOR_ESCALA_MAD = 1.4826
 # Días hábiles por mes: divisor de la demanda diaria (hardcodeado en el DAX).
 DIAS_HABILES_MES = 22
 
+# --- Centralizacion en el CD ----------------------------------------------------
+# Que filas deja de comprar la sucursal para que se las mande el CD.
+#
+# Hasta ago-2026: clase local C o D + clase agregada A/B contando TODAS las
+# sucursales. El problema es que la agregada la levanta la sucursal que ya vende
+# bien: un repuesto que se mueve en Linderos sale A a nivel nacional y arrastraba
+# a centralizacion a todas las demas, aunque entre ellas casi no se vendiera.
+#
+# Desde ago-2026 (Abastecimiento): solo clase local D, y la agregada se cuenta
+# SOLO sobre las sucursales donde el producto es D. Lo que decide si vale la pena
+# centralizar es cuanto suman las que lo piden poco, no la que ya lo vende sola.
+#
+# Los goldens se congelaron con la regla vieja: `tests_motor` la restaura para
+# seguir validando el resto del calculo (ver `_como_el_dax`).
+CENTRALIZACION_CLASES_LOCALES = ("D",)   # antes ("C", "D")
+CENTRALIZACION_AGREGADA_SOLO_D = True    # antes False: agregada de todas las sucursales
+
 # --- Ciclo de orden y lead time -------------------------------------------------
 
 CICLO_ORDEN_DIAS = 5          # compra directa al proveedor

@@ -60,12 +60,22 @@ def _gestion(dias: int):
 def _como_el_dax():
     """El motor con las reglas que tenia el DAX cuando se congelaron los goldens.
 
-    Hoy la unica es el dia de gestion de Abastecimiento, que se apaga aca para que
-    los goldens sigan validando TODO lo demas; la regla nueva tiene su propio test.
-    Cada divergencia que se agregue al motor se apaga en este mismo lugar.
+    Hoy son dos: el dia de gestion de Abastecimiento y la regla de centralizacion
+    en el CD. Se apagan aca para que los goldens sigan validando TODO lo demas;
+    cada regla nueva tiene su propio test. Cada divergencia que se le agregue al
+    motor se apaga en este mismo lugar.
     """
-    with _gestion(0):
-        yield
+    from src.motor import parametros as P
+
+    clases, solo_d = P.CENTRALIZACION_CLASES_LOCALES, P.CENTRALIZACION_AGREGADA_SOLO_D
+    P.CENTRALIZACION_CLASES_LOCALES = ("C", "D")
+    P.CENTRALIZACION_AGREGADA_SOLO_D = False
+    try:
+        with _gestion(0):
+            yield
+    finally:
+        P.CENTRALIZACION_CLASES_LOCALES = clases
+        P.CENTRALIZACION_AGREGADA_SOLO_D = solo_d
 
 
 def _calcular_etapas(fuentes):

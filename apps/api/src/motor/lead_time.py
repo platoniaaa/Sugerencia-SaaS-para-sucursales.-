@@ -8,8 +8,9 @@
 - Lead Time Dias: LT del par (proveedor, sucursal) si hay muestra, si no el LT
   global del proveedor, si no fallback 8.
 - LT CD a Sucursal: 1 día RM / 2 resto, con casos especiales.
-- Abastece CD: importado O (clase local C/D + agregada A/B); en la fila CD, solo
-  si es importado.
+- Abastece CD: importado O (clase local D + A/B en la agregada de las sucursales
+  D); en la fila CD, solo si es importado. Antes era "C/D local + agregada A/B"
+  sobre todas las sucursales (cambio de Abastecimiento, ago-2026).
 - LT Efectivo: LT CD si se abastece del CD, si no el LT del proveedor.
 """
 from __future__ import annotations
@@ -121,7 +122,8 @@ def calcular_lead_time(
     importados: list[str],
 ) -> pl.DataFrame:
     local = ["producto_master", "sucursal_final"]
-    r = abc.select([*local, "clasificacion_abc", "clasificacion_abc_agregada"])
+    r = abc.select([*local, "clasificacion_abc", "clasificacion_abc_agregada",
+                    "clasificacion_abc_agregada_d"])
     r = r.join(_proveedor_lt(abc, seguimiento), on=local, how="left")
     r = r.join(_proveedor_oc_reciente(abc, seguimiento), on=local, how="left")
 
@@ -179,13 +181,34 @@ def calcular_lead_time(
     # Abastece CD.
     es_imp = pl.col("producto_master").is_in(importados)
     r = r.with_columns(es_imp.alias("es_importado"))
+    # Centralizacion: el CD abastece a la sucursal en vez de que ella compre.
+    #
+    # Antes: clase local C o D + agregada A/B (sobre TODAS las sucursales). El
+    # problema es que la agregada normal la levanta la sucursal que ya vende bien:
+    # un repuesto que se mueve en Linderos sale A a nivel nacional y arrastraba a
+    # centralizacion a todas las demas, aunque entre ellas casi no se vendiera.
+    #
+    # Desde ago-2026 (Abastecimiento): solo clase local D, y la agregada se cuenta
+    # SOLO sobre las sucursales donde el producto es D. Asi lo que decide si vale
+    # la pena centralizar es cuanto suman las que lo piden poco, no la que ya lo
+    # vende sola. La C sale de la regla: una sucursal con rotacion C compra directo.
+    #
+    # OJO: `clasificacion_abc.calcular_abc` crea las filas sinteticas del CD con
+    # ESTA misma condicion. Si cambia una hay que cambiar la otra, o el CD queda
+    # con filas que nadie abastece.
     r = r.with_columns(
         pl.when(pl.col("sucursal_final") == P.CD_ID)
         .then(pl.when(pl.col("es_importado")).then(pl.lit("Si")).otherwise(pl.lit("No")))
         .otherwise(
             pl.when(
                 pl.col("es_importado")
-                | (pl.col("clasificacion_abc").is_in(["C", "D"]) & pl.col("clasificacion_abc_agregada").is_in(["A", "B"]))
+                | (
+                    pl.col("clasificacion_abc").is_in(list(P.CENTRALIZACION_CLASES_LOCALES))
+                    & pl.col(
+                        "clasificacion_abc_agregada_d" if P.CENTRALIZACION_AGREGADA_SOLO_D
+                        else "clasificacion_abc_agregada"
+                    ).is_in(["A", "B"])
+                )
             ).then(pl.lit("Si")).otherwise(pl.lit("No"))
         )
         .alias("abastece_cd")
