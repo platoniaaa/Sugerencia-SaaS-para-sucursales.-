@@ -54,10 +54,17 @@ avisar_falla('No se pudo armar la lista de vigentes FORD',
 
 # --- 2) Consultar el portal, con tope de tiempo ----------------------------------
 Log "Consultando el portal de FORD (tope $topeMinutos min)..."
+# El codigo de salida del Python viaja como una linea marcada dentro de la salida
+# del job. `$job.State` NO sirve para esto: dice si el JOB termino, no si el
+# proceso de adentro fallo. Con `State` este wrapper marco "RESULTADO: OK" una
+# corrida que habia muerto pidiendo MFA (22-08-2026), copio el archivo viejo a
+# crudos y no dejo ninguna incidencia. Es la misma trampa que documenta
+# `tarea_diaria.ps1`.
 $job = Start-Job -ScriptBlock {
     param($wings, $python)
     Set-Location $wings
     & $python -u "correr_vigentes_curifor.py" 2>&1
+    "__CODIGO_SALIDA__=$LASTEXITCODE"
 } -ArgumentList $wings, $python
 
 $termino = Wait-Job $job -Timeout ($topeMinutos * 60)
@@ -81,11 +88,41 @@ avisar_falla('La corrida semanal de vigentes FORD no termino',
     exit 1
 }
 
-Receive-Job $job 2>&1 | ForEach-Object { "$_" } | Out-File $log -Append -Encoding utf8
-$codigoCorrida = if ($job.State -eq "Completed") { 0 } else { 1 }
+$salidaJob = Receive-Job $job 2>&1 | ForEach-Object { "$_" }
 Remove-Job $job -Force
+$salidaJob | Out-File $log -Append -Encoding utf8
+
+$marca = $salidaJob | Where-Object { $_ -like "__CODIGO_SALIDA__=*" } | Select-Object -Last 1
+if ($marca) { $codigoCorrida = [int]($marca -replace '.*=', '') }
+else {
+    # Sin la marca, el job murio antes de llegar al final. No se asume exito.
+    $codigoCorrida = 1
+    Log "La corrida no dejo codigo de salida: se toma como fallida."
+}
+
+if ($codigoCorrida -ne 0) {
+    Log "FALLO la consulta al portal (codigo $codigoCorrida)."
+    Log "Si el log de arriba dice 'MFA', la sesion de Ford vencio: hay que abrir la"
+    Log "app de extraccion, entrar una vez, y volver a correr esta tarea."
+    Log "NO se copia nada a crudos: el motor sigue con el archivo de la semana pasada."
+    & "$root\apps\api\.venv\Scripts\python.exe" -c @"
+import sys; sys.path.insert(0, r'$root\apps\api')
+from src.jobs.correr_motor_real import avisar_falla
+avisar_falla('La corrida semanal de vigentes FORD fallo',
+             'La consulta al portal no termino bien. La causa mas comun es que la '
+             'sesion de Ford vencio y quedo pidiendo el MFA, que lo tiene que '
+             'ingresar una persona: abrir la app de extraccion, iniciar sesion, y '
+             'volver a correr la tarea. Los reemplazos siguen mostrando los de la '
+             'semana pasada, no hay dato erroneo en pantalla.')
+"@ 2>&1 | Out-File $log -Append -Encoding utf8
+    "RESULTADO: FALLO (codigo $codigoCorrida)" | Out-File $log -Append -Encoding utf8
+    exit $codigoCorrida
+}
 
 # --- 3) Dejar el resultado donde el motor lo ve ----------------------------------
+# Solo si la corrida termino bien: copiar tras una falla dejaria el archivo de la
+# corrida anterior con fecha nueva, y el log diria "actualizado" sin serlo.
+#
 # El motor busca "*vigentes*ford*" y toma el mas reciente. El nombre NO puede
 # llevar "precio", o desplaza a la lista de 39.622 que alimenta el SKU del portal.
 $salida = Get-ChildItem "$wings\salidas" -Filter "Vigentes ford curifor_*_resultado.xlsx" |
