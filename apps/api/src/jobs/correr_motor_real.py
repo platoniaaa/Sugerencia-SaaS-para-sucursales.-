@@ -233,6 +233,11 @@ def construir_csv(hoy: date | None = None) -> Path:
         # Opcionales; sin ellas esas columnas salen vacias y el resto no cambia.
         precios_ford_xlsx=_buscar("precios_ford", obligatorio=False),
         precios_gildemeister_xlsx=_buscar("precios_gildemeister", obligatorio=False),
+        # Vigentes de FORD consultados en vivo (proyecto WINGS). Este SI mueve el
+        # sugerido: trae los codigos descontinuados que la lista de precios no tiene.
+        # Opcional: sin el archivo, los reemplazos salen solo de la lista de precios,
+        # que es como funcionaba hasta ago-2026.
+        vigentes_ford_xlsx=_buscar("vigentes_ford", obligatorio=False),
         fin_mes_cerrado=_fin_mes_cerrado(hoy),
     )
     df = pipeline.ejecutar(fuentes, fin_mes_cerrado=_fin_mes_cerrado(hoy), hoy=hoy)
@@ -526,8 +531,13 @@ def publicar_reemplazos(fuentes: dict) -> dict | None:
             return None
         universo = dim.select("Producto").unique()
 
+    # Ordenado por la misma razon que en `ampliar_mapeo_con_ford`: 2.399 claves del
+    # maestro tienen mas de un codigo de Curifor y el `.unique()` de polars no da un
+    # orden estable. Sin esto, el aviso que ve el comprador podia nombrar un codigo
+    # distinto en cada corrida. Tiene que quedar igual que alla o el motor agrupa un
+    # codigo y la plataforma avisa de otro.
     por_clave: dict[str, str] = {}
-    for (p,) in universo.iter_rows():
+    for (p,) in universo.sort("Producto").iter_rows():
         k = clave_precio(p)
         if k and k not in por_clave:
             por_clave[k] = p

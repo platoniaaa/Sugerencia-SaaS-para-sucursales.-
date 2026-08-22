@@ -549,6 +549,18 @@ COLUMNAS_REEMPLAZO_FORD = [
     "Estado_Reemplazo", "Reemplazo_Aviso",
 ]
 
+# Forma con la que el motor consume los reemplazos de FORD, venga de donde venga.
+# La lista de precios y la consulta en vivo de WINGS tienen que devolver EXACTAMENTE
+# esto: `combinar_reemplazos_ford` las mezcla campo a campo y
+# `dimensiones.ampliar_mapeo_con_ford` consume el resultado sin saber de cual de las
+# dos salio cada dato. Si una de las dos se desalinea, la mezcla falla en silencio.
+ESQUEMA_REEMPLAZOS_FORD: dict[str, pl.DataType] = {
+    "clave_precio": pl.Utf8, "sku_ford": pl.Utf8, "clave_vigente": pl.Utf8,
+    "sku_vigente": pl.Utf8, "cadena": pl.Utf8, "reemplaza_a": pl.List(pl.Utf8),
+    "estado_reemplazo": pl.Utf8, "sucesor_confirmado": pl.Boolean,
+    "aviso": pl.Utf8,
+}
+
 
 def leer_reemplazos_ford(ruta: str | Path) -> pl.DataFrame:
     """Cadena de reemplazo que publica FORD, en claves comparables con Curifor.
@@ -573,15 +585,9 @@ def leer_reemplazos_ford(ruta: str | Path) -> pl.DataFrame:
 
     Si la hoja no trae las columnas, devuelve un frame vacio con el mismo esquema.
     """
-    esquema = {
-        "clave_precio": pl.Utf8, "sku_ford": pl.Utf8, "clave_vigente": pl.Utf8,
-        "sku_vigente": pl.Utf8, "cadena": pl.Utf8, "reemplaza_a": pl.List(pl.Utf8),
-        "estado_reemplazo": pl.Utf8, "sucesor_confirmado": pl.Boolean,
-        "aviso": pl.Utf8,
-    }
     df = pl.read_excel(ruta, sheet_name="Precios")
     if not any(c in df.columns for c in COLUMNAS_REEMPLAZO_FORD):
-        return pl.DataFrame(schema=esquema)
+        return pl.DataFrame(schema=ESQUEMA_REEMPLAZOS_FORD)
 
     def _txt(col: str) -> pl.Expr:
         if col not in df.columns:
@@ -611,7 +617,138 @@ def leer_reemplazos_ford(ruta: str | Path) -> pl.DataFrame:
         .list.drop_nulls()
         .alias("reemplaza_a"),
     )
-    return out.select(list(esquema)).filter(pl.col("clave_precio").is_not_null())
+    return out.select(list(ESQUEMA_REEMPLAZOS_FORD)).filter(
+        pl.col("clave_precio").is_not_null()
+    )
+
+
+# Columnas de la salida del proyecto WINGS (`lista_new*.xlsx`, hoja "lista_new").
+COLUMNAS_VIGENTES_FORD = [
+    "Codigo_Original", "Codigo_POPIMS", "Encontrado", "Vigente",
+    "Tiene_Reemplazo", "Aviso",
+]
+
+
+def leer_vigentes_ford(ruta: str | Path) -> pl.DataFrame:
+    """Vigentes que resolvio WINGS consultando el portal de FORD en vivo.
+
+    Devuelve la misma forma que `leer_reemplazos_ford` (`ESQUEMA_REEMPLAZOS_FORD`)
+    para que las dos fuentes se puedan combinar. Existe porque el origen es otro y
+    resuelve lo que la lista de precios no: esa es una foto estatica y no trae los
+    codigos que FORD dio de baja. Medido sobre los 33 repuestos FORD de la pauta
+    InStock (18-08-2026): 9 tienen reemplazo y 8 de esos 9 NO aparecen en la lista
+    de precios. Para esos 8 el motor no tenia de donde saber que estaban muertos.
+
+    Solo entran las filas donde FORD respondio (`Encontrado`). Una fila sin
+    respuesta NO dice "este codigo no tiene reemplazo", dice "no se sabe": tomarla
+    como lo primero borraria al combinar lo que si trae la lista de precios de ese
+    codigo. En la corrida del 18-08-2026 es 1 de 33 (`CYFS12YRT3`, que no se pudo
+    traducir al formato POPIMS) y en la lista de precios tiene dos reemplazos.
+
+    `reemplaza_a` sale siempre vacio: WINGS resuelve hacia adelante (a este codigo
+    lo reemplaza X) y no publica la direccion inversa. Esa la sigue poniendo la
+    lista de precios al combinar.
+    """
+    df = pl.read_excel(ruta, sheet_name="lista_new")
+    if not all(c in df.columns for c in ("Codigo_Original", "Vigente")):
+        return pl.DataFrame(schema=ESQUEMA_REEMPLAZOS_FORD)
+
+    def _txt(col: str) -> pl.Expr:
+        if col not in df.columns:
+            return pl.lit(None, dtype=pl.Utf8).alias(col)
+        return pl.col(col).cast(pl.Utf8, strict=False).str.strip_chars().replace("", None)
+
+    def _bool(col: str) -> pl.Expr:
+        # La columna llega como bool desde openpyxl, pero un Excel reabierto a mano
+        # la puede dejar como texto ("TRUE", "VERDADERO"). Se normalizan las dos.
+        if col not in df.columns:
+            return pl.lit(False).alias(col)
+        return (
+            pl.col(col).cast(pl.Utf8, strict=False).str.to_lowercase()
+            .is_in(["true", "verdadero", "si", "sí", "1"])
+            .fill_null(False)
+            .alias(col)
+        )
+
+    base = df.select(
+        *[_txt(c) for c in ("Codigo_Original", "Codigo_POPIMS", "Vigente", "Aviso")],
+        *[_bool(c) for c in ("Encontrado", "Tiene_Reemplazo")],
+    ).filter(pl.col("Encontrado") & pl.col("Codigo_Original").is_not_null())
+
+    con_reemplazo = pl.col("Tiene_Reemplazo") & pl.col("Vigente").is_not_null()
+    out = base.with_columns(
+        pl.col("Codigo_Original")
+        .map_elements(clave_precio, return_dtype=pl.Utf8)
+        .alias("clave_precio"),
+        # El SKU de FORD es el codigo con barras; si falta, el consultado sirve.
+        pl.coalesce("Codigo_POPIMS", "Codigo_Original").alias("sku_ford"),
+        pl.when(con_reemplazo)
+        .then(pl.col("Vigente").map_elements(clave_precio, return_dtype=pl.Utf8))
+        .alias("clave_vigente"),
+        pl.when(con_reemplazo).then(pl.col("Vigente")).alias("sku_vigente"),
+        # WINGS no publica la cadena completa, solo el extremo que eligio. Se arma
+        # con el mismo separador que usa la lista de precios ("A > B") para que la
+        # plataforma la pinte igual venga de donde venga.
+        pl.when(con_reemplazo)
+        .then(
+            pl.concat_str(
+                [pl.coalesce("Codigo_POPIMS", "Codigo_Original"), pl.col("Vigente")],
+                separator=" > ",
+            )
+        )
+        .alias("cadena"),
+        pl.when(con_reemplazo).then(pl.lit("Encontrado")).alias("estado_reemplazo"),
+        # WINGS consulto el portal y el sucesor respondio: eso ES la confirmacion.
+        # No se necesita el "Encontrado" de la lista de precios, que es otra cosa.
+        con_reemplazo.alias("sucesor_confirmado"),
+        pl.col("Aviso").alias("aviso"),
+        pl.lit([], dtype=pl.List(pl.Utf8)).alias("reemplaza_a"),
+    )
+    return (
+        out.select(list(ESQUEMA_REEMPLAZOS_FORD))
+        .filter(pl.col("clave_precio").is_not_null())
+        .unique(subset=["clave_precio"], keep="first")
+    )
+
+
+def combinar_reemplazos_ford(lista: pl.DataFrame, wings: pl.DataFrame) -> pl.DataFrame:
+    """Mezcla la lista de precios estatica con lo que WINGS consulto en vivo.
+
+    Cada fuente manda en una direccion distinta y por eso no se pisa la fila entera:
+
+    - **WINGS manda hacia adelante** (`clave_vigente`: a este codigo lo reemplaza X).
+      Consulta el portal en el momento, asi que resuelve los descontinuados que la
+      foto no tiene. Si WINGS dice que un codigo NO tiene reemplazo, eso tambien
+      manda: borra el sucesor que la lista de precios declaraba.
+    - **La lista de precios manda en la inversa** (`reemplaza_a`: este codigo
+      reemplazo a A, B, C), que WINGS no publica y de donde sale casi todo lo que
+      Curifor efectivamente agrupa.
+
+    Pisar la fila completa se veria mas simple y estaria mal: de los 33 codigos de
+    la pauta InStock, 11 traen `reemplaza_a` en la lista de precios (medido el
+    22-08-2026). Reemplazarlos enteros perderia esos 11 grupos sin que nada avisara.
+    """
+    if wings.is_empty():
+        return lista
+    cols = list(ESQUEMA_REEMPLAZOS_FORD)
+    if lista.is_empty():
+        return wings.select(cols)
+
+    # Las filas que WINGS no toca quedan intactas.
+    solo_lista = lista.join(wings.select("clave_precio"), on="clave_precio", how="anti")
+    # Las que si toca: todo de WINGS, menos `reemplaza_a`, que se trae de la lista.
+    # `coalesce` sirve porque una lista vacia no es null: para un codigo que WINGS
+    # conoce y la lista no, gana el [] de WINGS, que es lo correcto.
+    de_wings = (
+        wings.join(
+            lista.select(["clave_precio", pl.col("reemplaza_a").alias("_ra_lista")]),
+            on="clave_precio",
+            how="left",
+        )
+        .with_columns(pl.coalesce("_ra_lista", "reemplaza_a").alias("reemplaza_a"))
+        .select(cols)
+    )
+    return pl.concat([solo_lista.select(cols), de_wings])
 
 
 def leer_precios_gildemeister(ruta: str | Path) -> pl.DataFrame:

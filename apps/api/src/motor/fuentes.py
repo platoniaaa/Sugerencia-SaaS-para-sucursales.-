@@ -110,6 +110,12 @@ FUENTES: dict[str, FuenteSpec] = {
     "precios_gildemeister": FuenteSpec(
         ["*precio*gildemeister*", "*gildemeister*precio*"], excluye=["*ford*"], hoja="Precios"
     ),
+    # Vigentes que el proyecto WINGS resolvio consultando el portal de FORD en vivo
+    # ("lista_new_20260817.xlsx", "lista_new_personalizada_20260818_163549.xlsx").
+    # ESTO SI MUEVE EL SUGERIDO: es de donde salen los reemplazos que la lista de
+    # precios no tiene. Ojo con el patron: "lista_new*" y no "*lista*new*", para no
+    # tragarse "lista_or*", que es la ENTRADA de ese proyecto y tiene otras columnas.
+    "vigentes_ford": FuenteSpec(["lista_new*"], hoja="lista_new"),
     # Cajon para CUALQUIER otra lista de precios de proveedor. Nadie la lee: existe
     # solo para que un proveedor nuevo ("Lista de precio bosch al 30.08.2026.xlsx")
     # quede reconocido y no caiga por descarte en los respaldos de venta.

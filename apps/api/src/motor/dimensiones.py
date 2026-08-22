@@ -340,9 +340,21 @@ def ampliar_mapeo_con_ford(
     if reemplazos_ford.is_empty():
         return mapeo
 
-    # clave normalizada -> codigo real de Curifor (el primero, estable por orden).
+    # Clave normalizada -> codigo real de Curifor.
+    #
+    # Se ORDENA antes de elegir, y no es cosmetico: 2.399 claves del maestro tienen
+    # mas de un codigo de Curifor ("25 CN1Z8620E" y "19 CN1Z8620E" son el mismo
+    # repuesto con distinto rubro). Sin ordenar, el que ganaba dependia del orden en
+    # que llegara `productos`, que sale de un `.unique()` de polars y NO es estable.
+    # Medido el 22-08-2026: dos corridas IDENTICAS de la misma base daban 15 y 19
+    # filas distintas, y un mismo producto pedia $61.286 en una y $137.152 en la
+    # otra. Con el orden fijo, dos corridas iguales dan lo mismo.
+    #
+    # Cual de los codigos duplicados queda es arbitrario (gana el rubro mas bajo):
+    # lo que importa aca es que no cambie entre corridas. El arreglo de fondo es
+    # limpiar los duplicados en el maestro, y eso es de Repuestos.
     por_clave: dict[str, str] = {}
-    for p in (productos.to_list() if isinstance(productos, pl.Series) else productos):
+    for p in sorted(productos.to_list() if isinstance(productos, pl.Series) else productos):
         k = clave_precio(p)
         if k and k not in por_clave:
             por_clave[k] = p

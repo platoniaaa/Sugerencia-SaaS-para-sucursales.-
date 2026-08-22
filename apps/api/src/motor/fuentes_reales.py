@@ -181,6 +181,7 @@ def cargar_fuentes_reales(
     mix_reemplazos_xlsx: str | Path | None = None,
     precios_ford_xlsx: str | Path | None = None,
     precios_gildemeister_xlsx: str | Path | None = None,
+    vigentes_ford_xlsx: str | Path | None = None,
     fin_mes_cerrado: date | None = None,
     sql_conn=None,
 ) -> dict[str, pl.DataFrame]:
@@ -196,6 +197,9 @@ def cargar_fuentes_reales(
       seguimiento importado, el motor CALCULA las tablas chicas en vez de leerlas
       del snapshot congelado, y deja de depender del Power BI. `fin_mes_cerrado`
       hace falta para el mapeo (elige el master del grupo por venta de 6 meses).
+    - `vigentes_ford_xlsx`: salida del proyecto WINGS (`lista_new*.xlsx`) con el
+      vigente de cada codigo FORD consultado en vivo. Se combina con los reemplazos
+      que trae la lista de precios; ver `lectores_excel.combinar_reemplazos_ford`.
     - `sql_conn`: conexión a Flexline (`conectores.sql_flexline.conectar()`), como
       alternativa si algun dia se quiere leer en vivo desde la LAN.
 
@@ -343,19 +347,36 @@ def cargar_fuentes_reales(
         except Exception as e:  # noqa: BLE001 - una lista rota no puede voltear el sugerido
             print(f"  (no se pudo leer {clave}: {e})")
 
-    # La cadena de reemplazo que publica FORD (desde ago-2026) sale de la MISMA hoja
-    # de precios. A diferencia de los precios, esto SI mueve el sugerido: agrupa el
-    # stock y la demanda del codigo descontinuado con los del vigente, igual que el
-    # "mix andres". Va despues del mapeo a proposito: el mix manda y FORD solo llena
+    # La cadena de reemplazo de FORD llega por DOS caminos que se combinan:
+    #   - la lista de precios, en la misma hoja que los precios (foto semanal)
+    #   - la consulta en vivo del proyecto WINGS (`lista_new*.xlsx`), que resuelve
+    #     los codigos descontinuados que la foto no trae. Sobre los 33 repuestos de
+    #     la pauta InStock: 9 tienen reemplazo y 8 no estaban en la lista de precios.
+    # A diferencia de los precios, esto SI mueve el sugerido: agrupa el stock y la
+    # demanda del codigo descontinuado con los del vigente, igual que el "mix
+    # andres". Va despues del mapeo a proposito: el mix manda y FORD solo llena
     # huecos (ver `ampliar_mapeo_con_ford`).
     if (
-        precios_ford_xlsx is not None
+        (precios_ford_xlsx is not None or vigentes_ford_xlsx is not None)
         and "mapeo" in fuentes
         and ventas_crudo is not None
         and fin_mes_cerrado  # sin el mes cerrado no se puede elegir el master del grupo
     ):
         try:
-            reemplazos = _lx.leer_reemplazos_ford(precios_ford_xlsx)
+            reemplazos = pl.DataFrame(schema=_lx.ESQUEMA_REEMPLAZOS_FORD)
+            if precios_ford_xlsx is not None:
+                reemplazos = _lx.leer_reemplazos_ford(precios_ford_xlsx)
+            if vigentes_ford_xlsx is not None:
+                # En su propio try: un `lista_new` roto no puede dejar sin efecto los
+                # reemplazos que la lista de precios si trae.
+                try:
+                    wings = _lx.leer_vigentes_ford(vigentes_ford_xlsx)
+                    con_vig = wings.filter(pl.col("clave_vigente").is_not_null()).height
+                    reemplazos = _lx.combinar_reemplazos_ford(reemplazos, wings)
+                    print(f"  vigentes FORD (WINGS): {wings.height} codigo(s) con "
+                          f"respuesta, {con_vig} con reemplazo.")
+                except Exception as e:  # noqa: BLE001
+                    print(f"  (no se pudieron leer los vigentes de WINGS: {e})")
             if not reemplazos.is_empty():
                 # Para AGRUPAR solo sirven los codigos que el motor evalua: los que
                 # tienen venta o stock. Agrupar uno que no aparece en ninguna de las
