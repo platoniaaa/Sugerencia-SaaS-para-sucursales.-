@@ -29,6 +29,7 @@ def _reem(**kw):
         "clave_precio": None, "sku_ford": None, "clave_vigente": None,
         "sku_vigente": None, "cadena": None, "reemplaza_a": [],
         "estado_reemplazo": None, "sucesor_confirmado": False, "aviso": None,
+        "extraido_en": None,
     }
     base.update(kw)
     return base
@@ -134,6 +135,38 @@ def test_sin_la_lista_de_ford_sirve_la_de_curifor_sola():
 
     assert out.height == 1
     assert list(out.schema) == list(ESQUEMA_REEMPLAZOS_FORD)
+
+
+def test_cada_fila_conserva_la_fecha_de_SU_archivo():
+    """Es lo que hace que la fecha sirva de algo.
+
+    Los dos archivos se extraen por su lado: al 22-08-2026 la lista de FORD era
+    del 5 al 7 de agosto y la de Curifor de ese mismo dia. Si al combinar la
+    fecha se perdiera o se unificara, la plataforma mostraria "consultado hoy"
+    sobre datos de hace tres semanas — que es justo lo que la columna viene a
+    evitar.
+    """
+    ford = _frame([
+        _reem(clave_precio="SOLO_FORD", clave_vigente="X",
+              extraido_en="2026-08-05 23:20:26"),
+        _reem(clave_precio="EN_LAS_DOS", clave_vigente="VIEJO",
+              extraido_en="2026-08-05 23:20:26"),
+    ])
+    curifor = _frame([
+        _reem(clave_precio="EN_LAS_DOS", clave_vigente="NUEVO",
+              extraido_en="2026-08-22 18:24:47"),
+        _reem(clave_precio="SOLO_CURIFOR", clave_vigente="Y",
+              extraido_en="2026-08-22 18:24:47"),
+    ])
+
+    out = combinar_reemplazos_ford(ford, curifor)
+    fechas = dict(out.select(["clave_precio", "extraido_en"]).iter_rows())
+
+    assert fechas["SOLO_FORD"].startswith("2026-08-05")
+    assert fechas["SOLO_CURIFOR"].startswith("2026-08-22")
+    # La que esta en las dos se queda con la de Curifor, que es la que gana el
+    # vigente: la fecha tiene que contar la misma historia que el dato.
+    assert fechas["EN_LAS_DOS"].startswith("2026-08-22")
 
 
 def test_la_combinacion_conserva_el_esquema():

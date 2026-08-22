@@ -574,6 +574,10 @@ def publicar_reemplazos(fuentes: dict) -> dict | None:
             "sucesor_confirmado": bool(f["sucesor_confirmado"]),
             "agrupado": agrupado,
             "aviso": f["aviso"],
+            # Cuando se consulto el portal por esta fila. Sin esto la plataforma
+            # muestra un reemplazo de hace tres semanas con la misma cara que uno
+            # de hoy, y si la corrida semanal falla nadie tiene como notarlo.
+            "extraido_en": f["extraido_en"],
         })
     if not filas:
         return None

@@ -546,7 +546,7 @@ def leer_precios_ford(ruta: str | Path) -> pl.DataFrame:
 # misma hoja 'Precios' y son opcionales: una lista vieja sin ellas se lee igual.
 COLUMNAS_REEMPLAZO_FORD = [
     "Reemplazado_Por", "Cadena_Reemplazo", "Reemplaza_A",
-    "Estado_Reemplazo", "Reemplazo_Aviso",
+    "Estado_Reemplazo", "Reemplazo_Aviso", "Fecha_Extraccion",
 ]
 
 # Forma con la que el motor consume los reemplazos de FORD, venga de donde venga.
@@ -558,7 +558,7 @@ ESQUEMA_REEMPLAZOS_FORD: dict[str, pl.DataType] = {
     "clave_precio": pl.Utf8, "sku_ford": pl.Utf8, "clave_vigente": pl.Utf8,
     "sku_vigente": pl.Utf8, "cadena": pl.Utf8, "reemplaza_a": pl.List(pl.Utf8),
     "estado_reemplazo": pl.Utf8, "sucesor_confirmado": pl.Boolean,
-    "aviso": pl.Utf8,
+    "aviso": pl.Utf8, "extraido_en": pl.Utf8,
 }
 
 
@@ -606,6 +606,11 @@ def leer_reemplazos_ford(ruta: str | Path) -> pl.DataFrame:
         pl.col("Cadena_Reemplazo").alias("cadena"),
         pl.col("Estado_Reemplazo").alias("estado_reemplazo"),
         pl.col("Reemplazo_Aviso").alias("aviso"),
+        # Cuando se consulto el portal por ESTA fila. Va por fila y no como un
+        # valor global porque el motor combina dos archivos -la lista de FORD y
+        # la de los codigos de Curifor- y cada uno se extrae por su lado: una
+        # fila puede ser de hoy y la de al lado de hace tres semanas.
+        pl.col("Fecha_Extraccion").alias("extraido_en"),
         # Solo "Encontrado" deja el sucesor confirmado (codigo y precio).
         (pl.col("Estado_Reemplazo") == "Encontrado").alias("sucesor_confirmado"),
         # "A; B; C" -> claves normalizadas, sin vacios.
