@@ -197,9 +197,9 @@ def cargar_fuentes_reales(
       seguimiento importado, el motor CALCULA las tablas chicas en vez de leerlas
       del snapshot congelado, y deja de depender del Power BI. `fin_mes_cerrado`
       hace falta para el mapeo (elige el master del grupo por venta de 6 meses).
-    - `vigentes_ford_xlsx`: salida del proyecto WINGS (`lista_new*.xlsx`) con el
-      vigente de cada codigo FORD consultado en vivo. Se combina con los reemplazos
-      que trae la lista de precios; ver `lectores_excel.combinar_reemplazos_ford`.
+    - `vigentes_ford_xlsx`: salida del extractor de WINGS corrido sobre los codigos
+      FORD de Curifor (`Vigentes ford*.xlsx`). Mismo formato que la lista de precios;
+      se combina con ella en `lectores_excel.combinar_reemplazos_ford`.
     - `sql_conn`: conexión a Flexline (`conectores.sql_flexline.conectar()`), como
       alternativa si algun dia se quiere leer en vivo desde la LAN.
 
@@ -347,11 +347,15 @@ def cargar_fuentes_reales(
         except Exception as e:  # noqa: BLE001 - una lista rota no puede voltear el sugerido
             print(f"  (no se pudo leer {clave}: {e})")
 
-    # La cadena de reemplazo de FORD llega por DOS caminos que se combinan:
-    #   - la lista de precios, en la misma hoja que los precios (foto semanal)
-    #   - la consulta en vivo del proyecto WINGS (`lista_new*.xlsx`), que resuelve
-    #     los codigos descontinuados que la foto no trae. Sobre los 33 repuestos de
-    #     la pauta InStock: 9 tienen reemplazo y 8 no estaban en la lista de precios.
+    # La cadena de reemplazo de FORD llega por DOS archivos que se combinan, los dos
+    # producidos por el mismo extractor de WINGS y con el mismo formato:
+    #   - la lista de FORD (39.622 codigos): cubre el catalogo del proveedor, pero
+    #     de los codigos que Curifor stockea solo trae 4.488 de 9.805.
+    #   - la lista de Curifor (`Vigentes ford*.xlsx`): corre sobre stock + pautas,
+    #     asi que trae los otros. Medido el 22-08-2026: 899 con vigente y cadena,
+    #     1.918 con la direccion inversa, y +861 avisos publicables.
+    # Los dos hacen falta: el primero para la equivalencia de SKU del portal, que
+    # tiene que ser completa; el segundo para los reemplazos de lo que se vende.
     # A diferencia de los precios, esto SI mueve el sugerido: agrupa el stock y la
     # demanda del codigo descontinuado con los del vigente, igual que el "mix
     # andres". Va despues del mapeo a proposito: el mix manda y FORD solo llena
@@ -367,16 +371,22 @@ def cargar_fuentes_reales(
             if precios_ford_xlsx is not None:
                 reemplazos = _lx.leer_reemplazos_ford(precios_ford_xlsx)
             if vigentes_ford_xlsx is not None:
-                # En su propio try: un `lista_new` roto no puede dejar sin efecto los
+                # En su propio try: un archivo roto no puede dejar sin efecto los
                 # reemplazos que la lista de precios si trae.
                 try:
-                    wings = _lx.leer_vigentes_ford(vigentes_ford_xlsx)
-                    con_vig = wings.filter(pl.col("clave_vigente").is_not_null()).height
-                    reemplazos = _lx.combinar_reemplazos_ford(reemplazos, wings)
-                    print(f"  vigentes FORD (WINGS): {wings.height} codigo(s) con "
-                          f"respuesta, {con_vig} con reemplazo.")
+                    # Mismo lector que la lista de precios: es el mismo formato,
+                    # producido por el mismo extractor sobre otra lista de entrada.
+                    curifor = _lx.leer_reemplazos_ford(vigentes_ford_xlsx)
+                    con_vig = curifor.filter(pl.col("clave_vigente").is_not_null()).height
+                    # La de Curifor va SEGUNDA: es la que se consulto hoy, asi que
+                    # manda en el vigente. La de precios conserva `reemplaza_a` donde
+                    # la nueva no tiene dato -medido: 40 pares que solo tiene ella,
+                    # 22 de codigos que el portal no encontro en la corrida nueva-.
+                    reemplazos = _lx.combinar_reemplazos_ford(reemplazos, curifor)
+                    print(f"  vigentes FORD (Curifor): {curifor.height} codigo(s), "
+                          f"{con_vig} con reemplazo.")
                 except Exception as e:  # noqa: BLE001
-                    print(f"  (no se pudieron leer los vigentes de WINGS: {e})")
+                    print(f"  (no se pudieron leer los vigentes de Curifor: {e})")
             if not reemplazos.is_empty():
                 # Para AGRUPAR solo sirven los codigos que el motor evalua: los que
                 # tienen venta o stock. Agrupar uno que no aparece en ninguna de las

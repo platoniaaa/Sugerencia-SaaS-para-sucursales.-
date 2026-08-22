@@ -110,12 +110,28 @@ FUENTES: dict[str, FuenteSpec] = {
     "precios_gildemeister": FuenteSpec(
         ["*precio*gildemeister*", "*gildemeister*precio*"], excluye=["*ford*"], hoja="Precios"
     ),
-    # Vigentes que el proyecto WINGS resolvio consultando el portal de FORD en vivo
-    # ("lista_new_20260817.xlsx", "lista_new_personalizada_20260818_163549.xlsx").
-    # ESTO SI MUEVE EL SUGERIDO: es de donde salen los reemplazos que la lista de
-    # precios no tiene. Ojo con el patron: "lista_new*" y no "*lista*new*", para no
-    # tragarse "lista_or*", que es la ENTRADA de ese proyecto y tiene otras columnas.
-    "vigentes_ford": FuenteSpec(["lista_new*"], hoja="lista_new"),
+    # Vigentes de los codigos FORD que Curifor tiene (stock + pautas), consultados
+    # en el portal por el extractor de WINGS. Mismo formato que la lista de precios
+    # -hoja "Precios", 23 columnas- porque lo produce el MISMO extractor, solo que
+    # sobre otra lista de entrada.
+    #
+    # ESTO SI MUEVE EL SUGERIDO: trae los reemplazos de los codigos que la lista de
+    # precios no cubre, que son mas de la mitad de los que Curifor stockea.
+    #
+    # El nombre NO puede llevar "precio" ni "reemplazos": con "precio" cae en
+    # `precios_ford` y, siendo mas nuevo, desplaza a la lista de 39.622 que alimenta
+    # la equivalencia de SKU del portal; con "reemplazos" cae en `mix_reemplazos` y
+    # rompe el mix. Por eso el patron es "vigentes*".
+    "vigentes_ford": FuenteSpec(["*vigentes*ford*"], hoja="Precios"),
+    # Salida de "Actualizar vigentes" del proyecto WINGS ("lista_new*.xlsx"). NADIE
+    # la lee: quedo superada por la corrida del extractor sobre la lista de Curifor,
+    # que trae la cadena completa y la direccion inversa. Se declara igual, y ese es
+    # el punto: sin una fuente propia cae por descarte en los respaldos de venta
+    # -`es_de_alguna_fuente` la da por desconocida- y el motor revienta leyendola
+    # como si fuera un Excel de ventas. Paso el 22-08-2026 al cambiar el patron de
+    # arriba, y es la misma falla que las pautas de mantencion volvieron a provocar
+    # el 30-07-2026.
+    "lista_new_wings": FuenteSpec(["lista_new*"]),
     # Cajon para CUALQUIER otra lista de precios de proveedor. Nadie la lee: existe
     # solo para que un proveedor nuevo ("Lista de precio bosch al 30.08.2026.xlsx")
     # quede reconocido y no caiga por descarte en los respaldos de venta.
