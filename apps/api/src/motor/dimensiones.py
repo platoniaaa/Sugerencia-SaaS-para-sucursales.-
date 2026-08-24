@@ -322,14 +322,35 @@ def ampliar_mapeo_con_ford(
     ventas: pl.DataFrame,
     fin_mes_cerrado: date,
 ) -> pl.DataFrame:
-    """Suma al mapeo los grupos que FORD declara y el mix de Andres no cubre.
+    """Arma los grupos de reemplazo de FORD; el mix de Andres llena el resto.
 
-    El mix MANDA: un producto que ya quedo agrupado por `calcular_mapeo_master` no
-    lo toca FORD. No es un capricho — se midio (07-08-2026): mezclando los pares de
-    FORD dentro del mix, 41 productos que hoy estan agrupados DEJABAN de estarlo y
-    4 cambiaban de master, porque los pares nuevos creaban ambiguedades que hacian
-    caer grupos que hoy funcionan. Respetando el mix: 896 productos entran a un
-    grupo, 0 se pierden y 0 cambian de master.
+    **FORD MANDA.** En un codigo que las dos fuentes reclaman gana lo que dice el
+    portal: es la unica que sabe cual pieza sigue en produccion, y esa respuesta no
+    se vota. El mix se aplica en todo lo que FORD no toca.
+
+    Hasta el 24-08-2026 era al reves, y por una razon medida: al 07-08, con la
+    lista ESTATICA de 39.622 codigos, invertirlo dejaba 41 productos sin grupo
+    porque los pares nuevos creaban ambiguedades que hacian caer grupos que
+    funcionaban.
+
+    Lo que cambio no es el criterio sino la fuente. Ahora se consulta el portal por
+    los codigos que Curifor realmente tiene (proyecto WINGS, corrida semanal) y se
+    publica una fila por miembro del grupo, no una por codigo consultado. Medido de
+    nuevo el 24-08-2026 con esos datos:
+
+        productos dentro de un grupo    1.808 -> 1.822
+        quedan sueltos                      6   (eran 41 con la lista estatica)
+        entran a un grupo                  20
+        cambian de master                  25
+
+    Y los cambios de master son la razon de ser del cambio: hoy `19 CC1Z9365E`
+    cuelga de `17 2499389`, o sea que el grupo esta representado por el codigo que
+    FORD dio de baja y la orden de compra sale con ese. Invertido, cuelga del
+    vigente.
+
+    Si esta medicion se vuelve a correr y los "sueltos" se acercan otra vez a 41,
+    corresponde volver a discutirlo: el numero bajo porque mejoro la fuente, no
+    porque el riesgo no exista.
 
     Se toman las dos direcciones de la lista (`Reemplaza_A` y `Reemplazado_Por`) y
     se aplican las mismas salvaguardas del DAX: un producto no puede pertenecer a
@@ -359,20 +380,18 @@ def ampliar_mapeo_con_ford(
         if k and k not in por_clave:
             por_clave[k] = p
 
-    ya = set(mapeo["Producto"].to_list()) | set(mapeo["Producto_Master"].to_list())
-
     # vigente -> {viejos}, ambas direcciones, solo con los dos lados en Curifor.
     grupos: dict[str, set[str]] = {}
     for fila in reemplazos_ford.iter_rows(named=True):
         yo = por_clave.get(fila["clave_precio"])
-        if not yo or yo in ya:
+        if not yo:
             continue
         viejos = grupos.setdefault(yo, set())
         # `Reemplaza_A` sale de la cadena del portal y no depende de consultar al
         # sucesor: entra siempre. Es ademas de donde viene casi todo lo util.
         for k in fila["reemplaza_a"] or []:
             otro = por_clave.get(k)
-            if otro and otro != yo and otro not in ya:
+            if otro and otro != yo:
                 viejos.add(otro)
         # `Reemplazado_Por` solo agrupa con el sucesor CONFIRMADO. Sin confirmar
         # (999 de 1.070 filas) no se sabe si FORD no tiene sucesor o si el codigo
@@ -381,7 +400,7 @@ def ampliar_mapeo_con_ford(
         # 07-08-2026 esto excluye 22 pares, contra 16 confirmados que si entran.
         if fila["clave_vigente"] and fila["sucesor_confirmado"]:
             nuevo = por_clave.get(fila["clave_vigente"])
-            if nuevo and nuevo != yo and nuevo not in ya:
+            if nuevo and nuevo != yo:
                 grupos.setdefault(nuevo, set()).add(yo)
     grupos = {g: v for g, v in grupos.items() if v}
     if not grupos:
@@ -428,8 +447,9 @@ def ampliar_mapeo_con_ford(
         grupo.select(["Producto", pl.col("master_orig").alias("Producto_Master")])
         .unique(subset=["Producto"], keep="first")
     )
-    # El mix va primero: si algo se coló, gana el grupo que ya existía.
-    return pl.concat([mapeo, nuevo]).unique(subset=["Producto"], keep="first")
+    # FORD va primero: en un codigo que las dos fuentes reclaman, gana lo que dice
+    # el portal. El mix llena todo lo que FORD no toco.
+    return pl.concat([nuevo, mapeo]).unique(subset=["Producto"], keep="first")
 
 
 def _mes_menos(fin_mes_cerrado: date, meses: int) -> date:
