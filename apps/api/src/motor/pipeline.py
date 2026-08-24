@@ -188,10 +188,20 @@ def ejecutar(
     )
 
     # Reemplazos: los otros productos del grupo (excluye el master).
+    #
+    # `.sort()` antes de pegar: `group_by` no garantiza el orden dentro del grupo,
+    # asi que sin esto la MISMA base daba "13 F87Z8101AA, 19 F8RZ8100AA" en una
+    # corrida y "19 F8RZ8100AA, 13 F87Z8101AA" en la siguiente. Son 204 filas de
+    # 18.094 (medido el 24-08-2026 con dos corridas de `construir_csv`).
+    #
+    # No cambia ningun numero -es una columna de texto- pero ensucia cualquier
+    # comparacion entre corridas, que es justo la herramienta con la que se mide si
+    # un cambio movio el sugerido. Es la misma trampa que el `.unique()` del mapeo:
+    # ahi costo atribuir $97.548 a los reemplazos de FORD que en realidad eran ruido.
     reempl = (
         mapeo.filter(pl.col("Producto") != pl.col("Producto_Master"))
         .group_by("Producto_Master")
-        .agg(pl.col("Producto").str.join(", ").alias("reemplazos"))
+        .agg(pl.col("Producto").sort().str.join(", ").alias("reemplazos"))
         .rename({"Producto_Master": "producto_master"})
     )
     r = r.join(reempl, on="producto_master", how="left")
