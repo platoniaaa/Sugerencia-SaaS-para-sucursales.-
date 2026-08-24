@@ -5,7 +5,13 @@
 #  arma el Excel con el vigente y la cadena de reemplazo de cada uno, y lo deja en
 #  la carpeta de crudos. Al dia siguiente el motor diario lo toma solo.
 #
-#  Corre los LUNES: asi el martes la plataforma ya muestra los reemplazos frescos.
+#  Corre los LUNES a las 09:00. La hora no es al azar: el motor diario corre a las
+#  10:00, y la extraccion tarda ~37 min, asi que alcanza a dejar el Excel en crudos
+#  y los reemplazos frescos entran el mismo lunes. Si una semana se pone lenta y
+#  termina despues de las 10:00 no se pierde nada: los toma el motor del martes.
+#
+#  Se probo primero a las 07:30 y estaba mal pensado: la tarea necesita sesion de
+#  Windows iniciada -abre un Chrome visible- y a esa hora el PC esta apagado.
 #
 #  Si la sesion de Ford vencio, la corrida se queda esperando el MFA -eso es
 #  deliberado, el segundo factor no se automatiza-. Por eso hay un tope de tiempo:
@@ -22,9 +28,15 @@ $logDir = "$root\logs"
 if (-not (Test-Path $logDir)) { New-Item -ItemType Directory -Path $logDir | Out-Null }
 $log = "$logDir\vigentes_ford_$(Get-Date -Format 'yyyy-MM-dd').log"
 
-# La corrida completa medida el 22-08-2026: 5.020 codigos en 25 minutos. El tope
-# es holgado a proposito -la lista crece, y una semana lenta no es una falla- pero
-# muy por debajo de "toda la noche": si pasa de aca, es que pidio MFA.
+# Medido sobre las marcas de tiempo de la corrida del 22-08-2026: 7.124 codigos
+# en 36m42s de trabajo efectivo, o sea 0,31 s por codigo.
+#
+# Ojo con medir esto mirando la primera y la ultima consulta del Excel: ese span
+# daba 2h07, pero 1h30 eran huecos de una sesion que se interrumpio a mitad. El
+# numero que sirve es el tiempo con actividad, no el rango.
+#
+# El tope es holgado a proposito -la lista crece, y una semana lenta no es una
+# falla- pero muy por debajo de "toda la noche": si pasa de aca, es que pidio MFA.
 $topeMinutos = 90
 
 function Log($msg) {
