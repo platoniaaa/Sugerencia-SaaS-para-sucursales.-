@@ -487,6 +487,97 @@ def publicar_stock_unificado() -> dict | None:
         return None
 
 
+def filas_de_reemplazos(reem, por_clave: dict[str, str], grupo: dict[str, str]) -> list[dict]:
+    """Arma las filas que la plataforma va a guardar, sin tocar la red.
+
+    Separada de `publicar_reemplazos` para poder probarla: lo delicado aca no es
+    el POST sino decidir quien queda avisado y quien queda agrupado.
+
+    `por_clave`: clave_precio -> codigo de Curifor (del maestro completo).
+    `grupo`: codigo -> master, o sea que junto el motor de verdad.
+    """
+    filas: list[dict] = []
+    # (viejo, vigente, sku FORD del vigente, cuando se extrajo). Se resuelven
+    # despues del bucle, cuando ya se sabe cuales tienen fila propia.
+    candidatos: list[tuple[str, str, str | None, str | None]] = []
+    for f in reem.iter_rows(named=True):
+        yo = por_clave.get(f["clave_precio"])
+        if not yo:
+            continue
+        vigente = por_clave.get(f["clave_vigente"]) if f["clave_vigente"] else None
+        viejos = [por_clave[k] for k in (f["reemplaza_a"] or []) if k in por_clave]
+        viejos = [v for v in viejos if v != yo]
+        if not vigente and not f["sku_vigente"] and not viejos:
+            continue
+        # Agrupado = el motor los dejo bajo el mismo master. Se mira contra el
+        # vigente si lo hay, y si no contra el primero de los que esta pieza
+        # reemplazo: en las dos direcciones el grupo es el mismo.
+        otro = vigente or (viejos[0] if viejos else None)
+        agrupado = bool(
+            otro and yo in grupo and otro in grupo and grupo[yo] == grupo[otro]
+        )
+        filas.append({
+            "producto": yo,
+            "reemplazado_por": vigente,
+            "reemplazado_por_ford": f["sku_vigente"],
+            "cadena": f["cadena"],
+            "reemplaza_a": viejos,
+            "sucesor_confirmado": bool(f["sucesor_confirmado"]),
+            "agrupado": agrupado,
+            "aviso": f["aviso"],
+            # Cuando se consulto el portal por esta fila. Sin esto la plataforma
+            # muestra un reemplazo de hace tres semanas con la misma cara que uno
+            # de hoy, y si la corrida semanal falla nadie tiene como notarlo.
+            "extraido_en": f["extraido_en"],
+        })
+        candidatos.extend((v, yo, f["sku_ford"], f["extraido_en"]) for v in viejos)
+
+    # Los codigos que ESTA pieza reemplazo viven dentro de su `reemplaza_a`, y la
+    # mayoria no trae fila propia: de 4.364 nombrados, 3.864 no aparecen en el
+    # archivo de FORD con su propio numero de parte (FORD solo devuelve la ficha
+    # del codigo que se le consulto). Sin fila propia la plataforma no tiene donde
+    # mirar, y pasan dos cosas malas:
+    #
+    #   - el autocomplete no avisa que el codigo esta dado de baja. Son 3.713
+    #     codigos, entre ellos `20 XO5W30Q1FS`, que vende 761 al ano.
+    #   - la ficha del grupo los deja FUERA del total, porque `cuenta_en_el_total`
+    #     mira el `agrupado` de la fila del codigo y no encuentra ninguna. Eran 602
+    #     fichas mostrando un total que no cuadraba con el sugerido, que es justo
+    #     lo que `agrupado` existe para evitar.
+    #
+    # La direccion inversa es un dato de FORD tan valido como la directa: si el
+    # portal dice que `yo` reemplaza a `viejo`, entonces `viejo` esta dado de baja
+    # y su vigente es `yo`. Lo que NO se inventa es la cadena: el camino completo
+    # ("A > B > C") solo lo da el portal para el codigo consultado, asi que estas
+    # filas van sin `cadena` en vez de con una armada a mano.
+    #
+    # Ordenado y con `ya`: un mismo codigo viejo puede estar nombrado por dos
+    # vigentes distintos, y la plataforma no tiene clave unica por producto -si se
+    # colaran dos filas del mismo codigo, `por_producto` se quedaria con
+    # cualquiera de las dos. Gana el primero por orden alfabetico, siempre igual.
+    ya = {f["producto"] for f in filas}
+    for viejo, yo, sku_yo, extraido in sorted(candidatos, key=lambda c: (c[0], c[1])):
+        if viejo in ya:
+            continue
+        ya.add(viejo)
+        filas.append({
+            "producto": viejo,
+            "reemplazado_por": yo,
+            "reemplazado_por_ford": sku_yo,
+            "cadena": None,
+            "reemplaza_a": [],
+            # FORD nombro el sucesor y esta resuelto: es `yo`, con codigo de
+            # Curifor y de FORD. No es el caso "Sin candidato vigente".
+            "sucesor_confirmado": True,
+            "agrupado": bool(
+                viejo in grupo and yo in grupo and grupo[viejo] == grupo[yo]
+            ),
+            "aviso": None,
+            "extraido_en": extraido,
+        })
+    return filas
+
+
 def publicar_reemplazos(fuentes: dict) -> dict | None:
     """Sube la cadena de reemplazo de FORD para los codigos que Curifor tiene.
 
@@ -497,6 +588,9 @@ def publicar_reemplazos(fuentes: dict) -> dict | None:
 
     Se publica solo lo que toca al maestro de Curifor: de los 39.622 codigos de la
     lista, el resto no se puede mostrar en ninguna pantalla.
+
+    Va una fila por MIEMBRO del grupo, no una por codigo consultado a FORD: la
+    razon esta en `filas_de_reemplazos`.
     """
     import httpx
 
@@ -548,37 +642,8 @@ def publicar_reemplazos(fuentes: dict) -> dict | None:
         else {}
     )
 
-    filas = []
-    for f in reem.iter_rows(named=True):
-        yo = por_clave.get(f["clave_precio"])
-        if not yo:
-            continue
-        vigente = por_clave.get(f["clave_vigente"]) if f["clave_vigente"] else None
-        viejos = [por_clave[k] for k in (f["reemplaza_a"] or []) if k in por_clave]
-        viejos = [v for v in viejos if v != yo]
-        if not vigente and not f["sku_vigente"] and not viejos:
-            continue
-        # Agrupado = el motor los dejo bajo el mismo master. Se mira contra el
-        # vigente si lo hay, y si no contra el primero de los que esta pieza
-        # reemplazo: en las dos direcciones el grupo es el mismo.
-        otro = vigente or (viejos[0] if viejos else None)
-        agrupado = bool(
-            otro and yo in grupo and otro in grupo and grupo[yo] == grupo[otro]
-        )
-        filas.append({
-            "producto": yo,
-            "reemplazado_por": vigente,
-            "reemplazado_por_ford": f["sku_vigente"],
-            "cadena": f["cadena"],
-            "reemplaza_a": viejos,
-            "sucesor_confirmado": bool(f["sucesor_confirmado"]),
-            "agrupado": agrupado,
-            "aviso": f["aviso"],
-            # Cuando se consulto el portal por esta fila. Sin esto la plataforma
-            # muestra un reemplazo de hace tres semanas con la misma cara que uno
-            # de hoy, y si la corrida semanal falla nadie tiene como notarlo.
-            "extraido_en": f["extraido_en"],
-        })
+    filas = filas_de_reemplazos(reem, por_clave, grupo)
+
     if not filas:
         return None
 

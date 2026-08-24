@@ -627,6 +627,45 @@ def leer_reemplazos_ford(ruta: str | Path) -> pl.DataFrame:
     )
 
 
+def _colapsar_por_clave(df: pl.DataFrame) -> pl.DataFrame:
+    """Una fila por `clave_precio`, la mas informativa.
+
+    El mismo repuesto puede venir dos veces partido distinto -`8A61/A03195AE5/YY/`
+    y `8A61/A03195/AE/5YY` son el mismo numero de parte con el slash en otro lado-
+    y las dos formas dan la misma `clave_precio`. Al 22-08-2026: 6 casos en la
+    lista de FORD y 60 en la corrida de WINGS, donde el traductor consulta las dos
+    particiones cuando no esta seguro.
+
+    Sin colapsar pasan dos cosas, las dos malas:
+
+      - `combinar_reemplazos_ford` hace un `left join` por esta clave, y una clave
+        repetida del lado derecho MULTIPLICA la fila del izquierdo;
+      - la plataforma no tiene clave unica por producto, asi que dos filas del
+        mismo codigo la dejan quedandose con cualquiera. En `AB3917D698AC3ZH` una
+        de las dos trae el vigente y la otra no: el aviso al comprador aparecia o
+        no segun el orden de insercion.
+
+    Gana la fila que resolvio sucesor; despues la que nombra mas predecesores;
+    despues la mas reciente. El ultimo criterio es el `sku_ford` para que dos
+    corridas iguales elijan igual.
+    """
+    if df.height == df["clave_precio"].n_unique():
+        return df
+    return (
+        df.sort(
+            by=[
+                pl.col("sku_vigente").is_not_null(),
+                pl.col("reemplaza_a").list.len().fill_null(0),
+                pl.col("extraido_en"),
+                pl.col("sku_ford"),
+            ],
+            descending=[True, True, True, False],
+            nulls_last=True,
+        )
+        .unique(subset="clave_precio", keep="first", maintain_order=True)
+    )
+
+
 def combinar_reemplazos_ford(lista: pl.DataFrame, wings: pl.DataFrame) -> pl.DataFrame:
     """Mezcla la lista de precios estatica con lo que WINGS consulto en vivo.
 
@@ -644,6 +683,12 @@ def combinar_reemplazos_ford(lista: pl.DataFrame, wings: pl.DataFrame) -> pl.Dat
     la pauta InStock, 11 traen `reemplaza_a` en la lista de precios (medido el
     22-08-2026). Reemplazarlos enteros perderia esos 11 grupos sin que nada avisara.
     """
+    # Antes de cruzar nada: las dos fuentes traen el mismo repuesto repetido con
+    # otra particion, y una clave repetida rompe el join de abajo. Ver
+    # `_colapsar_por_clave`.
+    lista = _colapsar_por_clave(lista)
+    wings = _colapsar_por_clave(wings)
+
     if wings.is_empty():
         return lista
     cols = list(ESQUEMA_REEMPLAZOS_FORD)
