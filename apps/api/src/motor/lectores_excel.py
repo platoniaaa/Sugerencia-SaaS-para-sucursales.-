@@ -622,8 +622,13 @@ def leer_reemplazos_ford(ruta: str | Path) -> pl.DataFrame:
         .list.drop_nulls()
         .alias("reemplaza_a"),
     )
-    return out.select(list(ESQUEMA_REEMPLAZOS_FORD)).filter(
-        pl.col("clave_precio").is_not_null()
+    # Una fila por clave, siempre: el mismo numero de parte viene partido de dos
+    # formas y las dos dan la misma clave. Se colapsa aca -y no solo al combinar-
+    # para que la invariante valga tambien cuando hay una sola fuente.
+    return _colapsar_por_clave(
+        out.select(list(ESQUEMA_REEMPLAZOS_FORD)).filter(
+            pl.col("clave_precio").is_not_null()
+        )
     )
 
 
