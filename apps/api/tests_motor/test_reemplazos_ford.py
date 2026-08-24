@@ -125,16 +125,28 @@ def test_agrupa_el_viejo_con_el_vigente():
     }
 
 
-def test_el_mix_manda_y_ford_no_lo_toca():
-    """Lo medido: mezclarlos hacia caer 41 grupos que hoy funcionan."""
+def test_ford_le_gana_al_mix_cuando_los_dos_reclaman_el_codigo():
+    """FORD manda: el mix agrupa equivalentes, pero no sabe cual sigue vivo.
+
+    Esto estuvo al reves hasta el 24-08-2026, y por una razon medida: con la lista
+    ESTATICA de FORD, invertirlo dejaba 41 productos sin grupo. Lo que cambio no es
+    el criterio sino la fuente -ahora se consulta el portal por los codigos que
+    Curifor tiene- y remedido con esos datos son 6 sueltos contra 20 que entran.
+
+    Con el mix mandando, el grupo terminaba colgando de un codigo descontinuado y
+    la orden de compra salia con ese numero.
+    """
     mapeo = _mapeo([("25 AAA", "25 AAA"), ("25 BBB", "25 AAA")])
-    # FORD querria poner 25 BBB en otro grupo; no puede.
+    # FORD dice que 25 CCC reemplazo a 25 BBB, y esa respuesta gana.
     reem = _frame([_reem(clave_precio="CCC", reemplaza_a=["BBB"])])
     out = ampliar_mapeo_con_ford(
         mapeo, reem, ["25 AAA", "25 BBB", "25 CCC"], VENTAS_VACIAS, FIN
     )
-    assert dict(out.rows())["25 BBB"] == "25 AAA"   # intacto
-    assert "25 CCC" not in dict(out.rows())          # su unico miembro estaba tomado
+    m = dict(out.rows())
+    assert m["25 BBB"] == "25 CCC"
+    assert m["25 CCC"] == "25 CCC"
+    # Y lo que FORD no nombra sigue como lo dejo el mix.
+    assert m["25 AAA"] == "25 AAA"
 
 
 def test_un_producto_reclamado_por_dos_grupos_queda_fuera_de_los_dos():

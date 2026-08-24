@@ -243,9 +243,13 @@ def test_el_resultado_no_depende_del_orden_de_los_productos():
     assert resultados[0]["25 CN1Z8620D"] == "15 CN1Z8620E"
 
 
-def test_el_mix_sigue_mandando_sobre_ford():
-    """Un producto ya agrupado por el mix no lo toca FORD. Se midio el 07-08-2026
-    que invertirlo rompia 41 grupos."""
+def test_ford_manda_sobre_el_mix():
+    """El mix agrupa equivalentes; solo el portal sabe cual pieza sigue viva.
+
+    Estuvo al reves hasta el 24-08-2026, cuando la fuente era la lista ESTATICA y
+    invertirlo dejaba 41 productos sin grupo. Con la consulta al portal por los
+    codigos de Curifor, remedido: 6 sueltos contra 20 que entran a un grupo.
+    """
     reem = _frame([_reem(clave_precio="MB3Z19N619C", clave_vigente="MB3Z19N619A",
                          sucesor_confirmado=True)])
     mix = _mapeo([("25 MB3Z19N619C", "OTRO MASTER"), ("OTRO MASTER", "OTRO MASTER")])
@@ -256,4 +260,4 @@ def test_el_mix_sigue_mandando_sobre_ford():
     )
 
     masters = dict(out.select(["Producto", "Producto_Master"]).iter_rows())
-    assert masters["25 MB3Z19N619C"] == "OTRO MASTER"
+    assert masters["25 MB3Z19N619C"] == "19 MB3Z19N619A"
