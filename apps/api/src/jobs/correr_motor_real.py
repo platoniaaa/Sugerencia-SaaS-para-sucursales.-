@@ -916,6 +916,45 @@ def _avisar_en_plataforma(titulo: str, descripcion: str, pantalla: str) -> bool:
         return False
 
 
+def recargar_instock() -> dict | None:
+    """Vuelve a colgar la lista InStock del codigo vigente. Nunca lanza.
+
+    Va DESPUES de publicar los reemplazos y no es cosmetico: la carga resuelve
+    cada part number de la pauta contra el maestro y prefiere el vigente, pero
+    para saber cual es el vigente lee `agrupado` de la tabla que se acaba de
+    publicar. Si la agrupacion cambia y nadie recarga, la lista se queda con el
+    codigo viejo y la plataforma pide el MISMO repuesto dos veces: una por la
+    regla InStock con el codigo de baja y otra por reposicion con el vigente.
+
+    Paso dos veces el 24-08-2026. La primera fueron 6 repuestos duplicados; la
+    segunda, al invertir la precedencia FORD/mix, fue `25 KV6Z9155D` pidiendo 5
+    unidades por InStock mientras `25 KV6Z9155E` pedia 3 por reposicion. Las dos
+    veces hubo que darse cuenta a mano, que es justo lo que esto evita.
+    """
+    import httpx
+
+    base, email, password = _credenciales()
+    if not email or not password:
+        return None
+    try:
+        with httpx.Client(timeout=300) as c:
+            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
+            r.raise_for_status()
+            r = c.post(
+                f"{base}/api/admin/cargar-instock",
+                headers={"Authorization": f"Bearer {r.json()['token']}"},
+            )
+            r.raise_for_status()
+            out = r.json()
+            extra = (f", {out.get('sin_codigo')} sin codigo en el maestro"
+                     if out.get("sin_codigo") else "")
+            print(f"  InStock recargado: {out.get('productos')} repuestos{extra}.")
+            return out
+    except Exception as e:  # noqa: BLE001 - no puede romper una carga que ya salio bien
+        print(f"  (no se pudo recargar InStock: {e})")
+        return None
+
+
 def avisar_falla(motivo: str, detalle: str = "") -> bool:
     """Deja una incidencia en la plataforma cuando la corrida diaria falla.
 
@@ -1100,6 +1139,7 @@ def run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
         if rep:
             print(f"  reemplazos FORD publicados: {rep.get('filas_cargadas')} filas "
                   f"({rep.get('agrupados')} agrupan stock, el resto solo avisa).")
+            recargar_instock()
     else:
         print(
             f"SOMBRA: paridad {resultado['paridad_pct']}% "
