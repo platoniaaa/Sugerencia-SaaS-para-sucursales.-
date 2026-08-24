@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import datetime as dt
 from datetime import date
 from pathlib import Path
 
@@ -240,6 +241,7 @@ def construir_csv(hoy: date | None = None) -> Path:
         vigentes_ford_xlsx=_buscar("vigentes_ford", obligatorio=False),
         fin_mes_cerrado=_fin_mes_cerrado(hoy),
     )
+    avisar_lista_ford_vieja(hoy)
     df = pipeline.ejecutar(fuentes, fin_mes_cerrado=_fin_mes_cerrado(hoy), hoy=hoy)
     SALIDA.parent.mkdir(parents=True, exist_ok=True)
     # El lead time calculado se guarda aparte para publicarlo a la plataforma: es
@@ -833,6 +835,85 @@ def publicar_lead_time() -> dict | None:
     except Exception as e:  # noqa: BLE001 - publicar el LT nunca debe romper la carga
         print(f"  (no se pudo publicar el lead time: {e})")
         return None
+
+
+# Dos corridas semanales perdidas. Los reemplazos no cambian tanto de una semana
+# a otra como para detener el sugerido, pero nadie debe comprar sobre una lista de
+# un mes sin saberlo. Regla 6 del prompt: usar la ultima disponible y AVISAR.
+DIAS_LISTA_VIEJA = 14
+
+
+def avisar_lista_ford_vieja(hoy: date) -> int | None:
+    """Avisa si la consulta al portal de FORD quedo vieja. Devuelve los dias.
+
+    La corrida semanal puede fallar sin que nadie se entere: si la sesion del
+    portal vencio y pidio MFA, el wrapper deja una incidencia, pero si nadie la
+    mira el motor sigue publicando los reemplazos de la semana pasada con la misma
+    cara de siempre. Aca se mide contra la fecha del archivo que efectivamente se
+    leyo y se avisa por los dos canales que pide la regla 6: el log de la corrida
+    y una incidencia en la plataforma.
+
+    Devuelve None si no hay archivo o no se pudo leer la fecha: eso ya lo reporta
+    quien lo lee, y este aviso nunca debe tapar un error de mas arriba.
+    """
+    ruta = _buscar("vigentes_ford", obligatorio=False)
+    if ruta is None:
+        return None
+    try:
+        from ..motor import lectores_excel as _lx
+
+        fechas = (
+            _lx.leer_reemplazos_ford(ruta)["extraido_en"].drop_nulls().sort()
+        )
+        if not len(fechas):
+            return None
+        ultima = dt.datetime.fromisoformat(fechas[-1]).date()
+    except Exception as e:  # noqa: BLE001
+        print(f"  (no se pudo leer la fecha de los vigentes FORD: {e})")
+        return None
+
+    dias = (hoy - ultima).days
+    if dias < DIAS_LISTA_VIEJA:
+        print(f"  vigentes FORD: consultados el {ultima:%d-%m-%Y} ({dias} dia(s)).")
+        return dias
+
+    print(f"  ADVERTENCIA: los vigentes de FORD tienen {dias} dias "
+          f"(ultima consulta al portal: {ultima:%d-%m-%Y}).")
+    _avisar_en_plataforma(
+        f"Los reemplazos de FORD tienen {dias} dias",
+        (f"La ultima consulta al portal fue el {ultima:%d-%m-%Y}. La corrida "
+         "semanal deberia dejarlos al dia todos los lunes, asi que si estan "
+         "viejos es que viene fallando -lo mas comun es que la sesion de FORD "
+         "vencio y quedo pidiendo el MFA, que lo tiene que poner una persona.\n\n"
+         "El sugerido sigue funcionando con la ultima lista disponible: los "
+         "reemplazos no cambian tanto de una semana a otra. Pero un codigo que "
+         "FORD dio de baja despues de esa fecha todavia no aparece como tal."),
+        pantalla="sugerido",
+    )
+    return dias
+
+
+def _avisar_en_plataforma(titulo: str, descripcion: str, pantalla: str) -> bool:
+    """Deja una incidencia. Nunca lanza: avisar no puede romper la corrida."""
+    import httpx
+
+    base, email, password = _credenciales()
+    if not email or not password:
+        return False
+    try:
+        with httpx.Client(timeout=60) as c:
+            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
+            r.raise_for_status()
+            r = c.post(
+                f"{base}/api/incidencias",
+                headers={"Authorization": f"Bearer {r.json()['token']}"},
+                json={"titulo": titulo, "descripcion": descripcion, "pantalla": pantalla},
+            )
+            r.raise_for_status()
+            return True
+    except Exception as e:  # noqa: BLE001
+        print(f"  (no se pudo dejar la incidencia: {e})")
+        return False
 
 
 def avisar_falla(motivo: str, detalle: str = "") -> bool:
