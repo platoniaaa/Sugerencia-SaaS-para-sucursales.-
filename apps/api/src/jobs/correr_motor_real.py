@@ -577,6 +577,56 @@ def filas_de_reemplazos(reem, por_clave: dict[str, str], grupo: dict[str, str]) 
             "aviso": None,
             "extraido_en": extraido,
         })
+    # El vigente de un codigo no puede ser otro que TAMBIEN esta dado de baja: la
+    # columna se llama "el codigo vigente" y con eso se compra. Al 24-08-2026 eran
+    # 140 filas de 4.230 apuntando a un intermedio de la cadena.
+    #
+    # Se resuelve siguiendo `reemplazado_por` hasta el final. Tres casos que no se
+    # pueden resolver y se dejan como estan, con una nota en el aviso:
+    #
+    #   - ciclos: `19 1S7Z6375D` y `19 1S7Z6375E` se reemplazan mutuamente;
+    #   - autorreferencia: `18 GN1Z8419AC` apuntaba a si mismo;
+    #   - el vigente final no esta en el maestro (ahi ya no hay a donde ir).
+    vigente_de = {f["producto"]: f["reemplazado_por"]
+                  for f in filas if f["reemplazado_por"]}
+
+    def _final(p: str) -> tuple[str | None, bool]:
+        """(vigente final, hubo ciclo)."""
+        visto = {p}
+        actual = vigente_de.get(p)
+        while actual:
+            if actual in visto:
+                return actual, True
+            visto.add(actual)
+            siguiente = vigente_de.get(actual)
+            if not siguiente:
+                return actual, False
+            actual = siguiente
+        return None, False
+
+    for f in filas:
+        v = f["reemplazado_por"]
+        if not v:
+            continue
+        if v == f["producto"]:
+            # Un codigo no se reemplaza a si mismo. Pasa cuando dos numeros de
+            # parte de FORD caen en la misma clave del maestro de Curifor.
+            f["reemplazado_por"] = None
+            f["aviso"] = "; ".join(x for x in [
+                f["aviso"], "FORD lo da como reemplazo de si mismo: revisar a mano"] if x)
+            continue
+        final, ciclo = _final(f["producto"])
+        if ciclo:
+            f["aviso"] = "; ".join(x for x in [
+                f["aviso"],
+                f"la cadena vuelve sobre si misma en {final}: revisar a mano"] if x)
+            continue
+        if final and final != v:
+            f["reemplazado_por"] = final
+            # El sku de FORD ya no corresponde al codigo nuevo, y prefiero dejarlo
+            # vacio antes que mostrar uno que no es el del vigente.
+            f["reemplazado_por_ford"] = None
+
     return filas
 
 

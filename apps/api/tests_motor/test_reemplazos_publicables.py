@@ -196,3 +196,57 @@ def test_una_clave_repetida_no_multiplica_la_fila_del_otro_lado():
     assert out.height == 1
     # Y no se pierde la direccion inversa, que solo trae la lista de precios.
     assert out["reemplaza_a"].to_list() == [["V1"]]
+
+
+# --- El vigente no puede estar el mismo dado de baja -----------------------------
+# La columna se llama "el codigo vigente" y con ella se compra. Al 24-08-2026 eran
+# 140 filas de 4.230 apuntando a un intermedio de la cadena.
+
+
+def test_el_vigente_se_resuelve_hasta_el_final_de_la_cadena():
+    """A -> B -> C: la fila de A tiene que decir C, no B.
+
+    Lo levanto Abastecimiento con `17 2005485`, que decia que su vigente era
+    `17 GK2Z9365A` cuando ese codigo tambien estaba descontinuado.
+    """
+    tres = _reem([
+        _fila("A/1/", "A", sku_vigente="B/1/", clave_vigente="B"),
+        _fila("B/1/", "B", sku_vigente="C/1/", clave_vigente="C"),
+        _fila("C/1/", "C", reemplaza_a=["B"]),
+    ])
+    por_clave = {"A": "25 A", "B": "25 B", "C": "25 C"}
+
+    filas = _por_producto(filas_de_reemplazos(tres, por_clave, {}))
+
+    assert filas["25 A"]["reemplazado_por"] == "25 C"
+    assert filas["25 B"]["reemplazado_por"] == "25 C"
+
+
+def test_un_codigo_no_se_reemplaza_a_si_mismo():
+    """Pasa cuando dos numeros de parte caen en la misma clave del maestro.
+
+    `18 GN1Z8419AC` salia apuntandose a si mismo.
+    """
+    solo = _reem([_fila("X/1/", "X", sku_vigente="X/1/B", clave_vigente="X")])
+
+    filas = _por_producto(filas_de_reemplazos(solo, {"X": "18 X"}, {}))
+
+    assert filas["18 X"]["reemplazado_por"] is None
+    assert "de si mismo" in filas["18 X"]["aviso"]
+
+
+def test_un_ciclo_no_cuelga_y_queda_avisado():
+    """`19 1S7Z6375D` y `19 1S7Z6375E` se reemplazan mutuamente.
+
+    Seguir la cadena a ciegas seria un bucle infinito. Se corta, se deja el dato
+    como esta y se avisa: no hay forma de saber cual de los dos manda.
+    """
+    ciclo = _reem([
+        _fila("D/1/", "D", sku_vigente="E/1/", clave_vigente="E"),
+        _fila("E/1/", "E", sku_vigente="D/1/", clave_vigente="D"),
+    ])
+
+    filas = _por_producto(filas_de_reemplazos(ciclo, {"D": "19 D", "E": "19 E"}, {}))
+
+    assert "vuelve sobre si misma" in filas["19 D"]["aviso"]
+    assert "vuelve sobre si misma" in filas["19 E"]["aviso"]
