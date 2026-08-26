@@ -134,3 +134,67 @@ def calcular_demanda(
     return base.with_columns(
         (pl.col("demanda_mensual") / P.DIAS_HABILES_MES).alias("demanda_diaria")
     )
+
+
+def calcular_serie_mensual(
+    ventas: pl.DataFrame,
+    mapeo: pl.DataFrame,
+    dim_producto: pl.DataFrame,
+    fin_mes_cerrado: date,
+) -> pl.DataFrame:
+    """Venta mes a mes de los últimos 12 meses y sus promedios a 3, 6 y 12.
+
+    Es la MISMA serie con la que se calcula la demanda -mismo grano
+    (producto_master + sucursal_final), misma CantidadAjustada, misma ventana- pero
+    SIN winsorizar: el comprador tiene que poder sumar las doce columnas, dividir
+    por doce, y que le dé el promedio que está al lado. `demanda_mensual` recorta
+    los peaks a propósito; si fuera esa la que se muestra, la resta no cuadraría y
+    no habría forma de comprobar el número.
+
+    Las columnas se numeran por POSICIÓN y no por mes: `venta_mes_01` es siempre el
+    último mes cerrado y `venta_mes_12` el más antiguo de la ventana. Nombrarlas por
+    mes obligaría a agregar y borrar columnas de la tabla en cada corrida; la
+    etiqueta ("jun-25") la arma la plataforma con el periodo que devuelve
+    `ultimo_mes_cerrado`, y que el motor publica en la misma corrida.
+
+    Ojo con el CD: acá va lo que el CD vendió, que es casi nada. Su
+    `demanda_mensual` es otra cosa -la consolidación de las sucursales clase C/D que
+    abastece- y por eso no cuadra con estas columnas. Repetir acá la serie
+    consolidada haría que sumar las sucursales diera el doble de la venta del país.
+    """
+    v = preparar_ventas(ventas, mapeo, dim_producto).with_columns(
+        pl.col("Fecha").dt.strftime("%Y%m").alias("mes")
+    )
+    local = ["producto_master", "sucursal_final"]
+    totales = v.group_by([*local, "mes"]).agg(pl.col("CantidadAjustada").sum().alias("total"))
+
+    # `_meses_ventana` devuelve del más antiguo al más reciente; las columnas van
+    # al revés (01 = el último mes cerrado), así que el índice se da vuelta.
+    meses = _meses_ventana(_inicio_ventana(fin_mes_cerrado, P.VENTANA_M12), P.VENTANA_M12)
+    n = len(meses)
+    serie = _serie_completa(totales, totales.select(local).unique(), meses, local)
+
+    ancho = serie.group_by(local).agg([
+        pl.col("total").filter(pl.col("mes") == m).sum().alias(f"venta_mes_{n - i:02d}")
+        for i, m in enumerate(meses)
+    ])
+    return ancho.with_columns(
+        pl.mean_horizontal(
+            [pl.col(f"venta_mes_{i:02d}") for i in range(1, P.VENTANA_M3 + 1)]
+        ).alias("prom_vta_3m"),
+        pl.mean_horizontal(
+            [pl.col(f"venta_mes_{i:02d}") for i in range(1, P.VENTANA_M6 + 1)]
+        ).alias("prom_vta_6m"),
+        pl.mean_horizontal(
+            [pl.col(f"venta_mes_{i:02d}") for i in range(1, P.VENTANA_M12 + 1)]
+        ).alias("prom_vta_12m"),
+    )
+
+
+def ultimo_mes_cerrado(fin_mes_cerrado: date) -> str:
+    """El "YYYYMM" al que corresponde `venta_mes_01`.
+
+    Vive acá y no en el pipeline para que la etiqueta y el dato no puedan salir de
+    corridas distintas: es la misma cuenta que define la ventana de la serie.
+    """
+    return _meses_ventana(_inicio_ventana(fin_mes_cerrado, P.VENTANA_M12), P.VENTANA_M12)[-1]

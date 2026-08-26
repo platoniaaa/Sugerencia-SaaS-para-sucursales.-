@@ -29,7 +29,7 @@ import polars as pl
 
 from . import parametros as P
 from .clasificacion_abc import calcular_abc
-from .demanda import calcular_demanda
+from .demanda import calcular_demanda, calcular_serie_mensual, ultimo_mes_cerrado
 from .lead_time import calcular_lead_time
 from .lead_time_proveedor import calcular_lead_time_proveedor, calcular_lead_time_proveedor_sucursal
 from .safety_stock import calcular_safety_stock
@@ -37,6 +37,9 @@ from .sugerido import _grupo_reemplazos, _stock_activo, calcular_sugerido
 from .traslados import calcular_traslados
 
 _LOCAL = ["producto_master", "sucursal_final"]
+# Las 12 columnas de venta mensual (01 = ultimo mes cerrado) y sus promedios.
+_COLS_SERIE = ([f"venta_mes_{i:02d}" for i in range(1, P.VENTANA_M12 + 1)]
+               + ["prom_vta_3m", "prom_vta_6m", "prom_vta_12m"])
 
 # (nombre en Dim Sucursal ausente) -> nombre que muestra el modelo.
 _NOMBRE_FALLBACK = {
@@ -167,6 +170,19 @@ def ejecutar(
     r = r.join(abc.select([*_LOCAL, "m3", "m6", "m12"]), on=_LOCAL, how="left")
     r = r.join(dem.select([*_LOCAL, "demanda_mensual", "desv_std_mensual", "demanda_diaria"]),
                on=_LOCAL, how="left")
+
+    # Venta mes a mes de los ultimos 12 y sus promedios. Es la misma serie de la
+    # demanda pero sin winsorizar, para que las doce columnas sumen el promedio que
+    # esta al lado (ver `calcular_serie_mensual`).
+    serie = calcular_serie_mensual(ventas, mapeo, dim_p, fin_mes_cerrado)
+    r = r.join(serie, on=_LOCAL, how="left")
+    # Un producto sin ninguna venta en la ventana no tiene fila en la serie, y con
+    # el left join queda en null. Ahi el dato NO falta: vendio cero, y eso es
+    # justamente lo que el comprador necesita ver.
+    r = r.with_columns([pl.col(c).fill_null(0.0) for c in _COLS_SERIE])
+    # A que mes corresponde `venta_mes_01`. Sale de la fecha de corte y no de la
+    # venta, asi que vale igual para las filas que no vendieron nada.
+    r = r.with_columns(pl.lit(ultimo_mes_cerrado(fin_mes_cerrado)).alias("periodo_ultimo_mes"))
 
     # Nombre Sucursal: Dim Sucursal -> fallbacks del modelo -> el ID.
     nombres = dim_s.select(pl.col("SucursalID"), pl.col("Nombre").alias("_nombre"))
@@ -335,6 +351,13 @@ _CONTRATO: list[tuple[str, str]] = [
     ("Demanda Mensual", "demanda_mensual"),
     ("Desv Std Mensual", "desv_std_mensual"),
     ("Demanda Diaria", "demanda_diaria"),
+    # Venta mes a mes. El nombre es posicional -01 es el ultimo mes cerrado- y
+    # `Periodo Ultimo Mes` es el que le pone fecha a esa posicion en la plataforma.
+    *[(f"Venta Mes {i:02d}", f"venta_mes_{i:02d}") for i in range(1, P.VENTANA_M12 + 1)],
+    ("Prom Vta 3m", "prom_vta_3m"),
+    ("Prom Vta 6m", "prom_vta_6m"),
+    ("Prom Vta 12m", "prom_vta_12m"),
+    ("Periodo Ultimo Mes", "periodo_ultimo_mes"),
     ("Stock de Seguridad", "stock_seguridad"),
     ("Costo Unitario", "costo_unitario"),
     ("Es Importado", "es_importado"),
