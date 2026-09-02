@@ -24,6 +24,7 @@ from __future__ import annotations
 import argparse
 import os
 import sys
+import time
 import datetime as dt
 from datetime import date
 from pathlib import Path
@@ -350,7 +351,7 @@ def publicar_transito() -> dict | None:
             r.raise_for_status()
             return r.json()
     except Exception as e:  # noqa: BLE001 - publicar el transito nunca debe romper la carga
-        print(f"  (no se pudo publicar el transito: {e})")
+        fallo_publicacion("el transito", e)
         return None
 
 
@@ -445,7 +446,7 @@ def publicar_ventas_historicas() -> dict | None:
                 periodos.extend(d.get("periodos", []))
             return {"filas_cargadas": cargadas, "periodos": periodos, "al_dia": False}
     except Exception as e:  # noqa: BLE001 - publicar las ventas nunca debe romper la carga
-        print(f"  (no se pudieron publicar las ventas: {e})")
+        fallo_publicacion("las ventas", e)
         return None
 
 
@@ -485,7 +486,7 @@ def publicar_stock_unificado() -> dict | None:
             r.raise_for_status()
             return r.json()
     except Exception as e:  # noqa: BLE001 - publicar el stock nunca debe romper la carga
-        print(f"  (no se pudo publicar el stock: {e})")
+        fallo_publicacion("el stock", e)
         return None
 
 
@@ -714,7 +715,7 @@ def publicar_reemplazos(fuentes: dict) -> dict | None:
             out["agrupados"] = sum(1 for f in filas if f["agrupado"])
             return out
     except Exception as e:  # noqa: BLE001 - publicar esto nunca debe romper la carga
-        print(f"  (no se pudieron publicar los reemplazos: {e})")
+        fallo_publicacion("los reemplazos", e)
         return None
 
 
@@ -767,7 +768,7 @@ def publicar_sku_proveedor(fuentes: dict) -> dict | None:
             r.raise_for_status()
             return r.json()
     except Exception as e:  # noqa: BLE001 - nunca debe romper la carga del sugerido
-        print(f"  (no se pudo publicar la equivalencia de SKU: {e})")
+        fallo_publicacion("la equivalencia de SKU", e)
         return None
 
 
@@ -816,7 +817,7 @@ def publicar_proveedor_producto(fuentes: dict) -> dict | None:
             r.raise_for_status()
             return r.json()
     except Exception as e:  # noqa: BLE001 - nunca debe romper la carga del sugerido
-        print(f"  (no se pudo publicar el proveedor por producto: {e})")
+        fallo_publicacion("el proveedor por producto", e)
         return None
 
 
@@ -883,7 +884,7 @@ def publicar_lead_time() -> dict | None:
             r.raise_for_status()
             return r.json()
     except Exception as e:  # noqa: BLE001 - publicar el LT nunca debe romper la carga
-        print(f"  (no se pudo publicar el lead time: {e})")
+        fallo_publicacion("el lead time", e)
         return None
 
 
@@ -1001,8 +1002,73 @@ def recargar_instock() -> dict | None:
             print(f"  InStock recargado: {out.get('productos')} repuestos{extra}.")
             return out
     except Exception as e:  # noqa: BLE001 - no puede romper una carga que ya salio bien
-        print(f"  (no se pudo recargar InStock: {e})")
+        fallo_publicacion("InStock", e)
         return None
+
+
+# Pasos de publicacion que NO se publicaron en esta corrida. Vacio = salio todo.
+_FALLOS: list[dict] = []
+
+# Cuantas veces se reintenta un paso y cuanto se espera entre intentos. Render
+# tarda decenas de segundos en despertar el servicio; con tres intentos y espera
+# creciente se cubre ese arranque sin dejar el job colgado si esta caido de verdad.
+REINTENTOS = 3
+ESPERA_BASE_SEG = 15
+
+# Sintomas de "la infraestructura esta levantandose", no de un error del dato.
+_TRANSITORIOS = (
+    "502", "503", "504", "Bad Gateway", "Service Unavailable", "Gateway Timeout",
+    "ConnectError", "ConnectTimeout", "ReadTimeout", "RemoteProtocolError",
+)
+
+
+def _es_transitorio(e: Exception) -> bool:
+    texto = f"{type(e).__name__}: {e}"
+    return any(t in texto for t in _TRANSITORIOS)
+
+
+def fallo_publicacion(paso: str, e: Exception) -> None:
+    """Deja constancia de que un paso NO se publico.
+
+    Antes cada publicador imprimia el error y devolvia None, y `run` no podia
+    distinguir "no habia nada que publicar" de "fallo": el job terminaba en 0 y
+    decia "Listo. Los compradores ya ven los datos nuevos.".
+
+    Paso tres veces entre el 28-08 y el 01-09-2026. La peor fue la del 01-09: se
+    publico el sugerido con stock nuevo y fallaron el stock unificado y el
+    transito, asi que la grilla y la ficha del mismo repuesto mostraban numeros
+    distintos, y el sugerido descontaba un transito viejo. Quedar a medias es
+    peor que no publicar nada, porque no se nota.
+    """
+    print(f"  (no se pudo publicar {paso}: {e})")
+    _FALLOS.append({
+        "paso": paso,
+        "error": f"{type(e).__name__}: {e}",
+        "transitorio": _es_transitorio(e),
+    })
+
+
+def publicar_con_reintentos(paso: str, fn, *args):
+    """Corre un paso de publicacion y reintenta lo que es transitorio.
+
+    Se detecta el fallo mirando si `fn` registro uno en `_FALLOS`, y no por lo que
+    devuelve: un `None` tambien significa "no habia nada que publicar", que es
+    legitimo y no se debe reintentar.
+    """
+    for intento in range(1, REINTENTOS + 1):
+        marca = len(_FALLOS)
+        r = fn(*args)
+        if len(_FALLOS) == marca:
+            return r
+        if not _FALLOS[-1]["transitorio"] or intento == REINTENTOS:
+            return None
+        espera = ESPERA_BASE_SEG * intento
+        print(f"    reintentando {paso} en {espera}s "
+              f"(intento {intento + 1} de {REINTENTOS})...")
+        # El fallo solo cuenta si el ULTIMO intento tambien falla.
+        _FALLOS.pop()
+        time.sleep(espera)
+    return None
 
 
 def avisar_falla(motivo: str, detalle: str = "") -> bool:
@@ -1152,21 +1218,21 @@ def run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
         for a in resultado.get("advertencias", []):
             print(f"  advertencia: {a}")
         # El detalle del lead time calculado, para verlo en Calibracion.
-        lt = publicar_lead_time()
+        lt = publicar_con_reintentos("el lead time", publicar_lead_time)
         if lt:
             print(f"  lead time publicado: {lt.get('filas_cargadas')} filas.")
         # El stock por bodega, para la ficha del catalogo.
-        stk = publicar_stock_unificado()
+        stk = publicar_con_reintentos("el stock", publicar_stock_unificado)
         if stk:
             print(f"  stock publicado: {stk.get('filas_cargadas')} filas.")
         # El transito de todo el catalogo, para que el comprador no compre de nuevo
         # algo que ya viene en camino aunque no este en el sugerido.
-        tra = publicar_transito()
+        tra = publicar_con_reintentos("el transito", publicar_transito)
         if tra:
             print(f"  transito publicado: {tra.get('filas_cargadas')} filas.")
         # Los meses de venta que la plataforma no tenga. Normalmente ninguno; al
         # pegar un mes nuevo en el respaldo, ese mes.
-        vta = publicar_ventas_historicas()
+        vta = publicar_con_reintentos("las ventas", publicar_ventas_historicas)
         if vta and vta.get("al_dia"):
             print("  ventas: la plataforma ya esta al dia.")
         elif vta:
@@ -1174,22 +1240,26 @@ def run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
                   f"(periodos {', '.join(vta.get('periodos') or [])}).")
         # Equivalencia codigo Curifor -> SKU del portal, para armar el archivo de
         # carga masiva sin que el comprador convierta codigos a mano.
-        sku = publicar_sku_proveedor(globals().get("_ULTIMAS_FUENTES") or {})
+        sku = publicar_con_reintentos("la equivalencia de SKU", publicar_sku_proveedor,
+                                      globals().get("_ULTIMAS_FUENTES") or {})
         if sku:
             print(f"  equivalencias de SKU publicadas: {sku.get('filas_cargadas')} ({sku.get('proveedor')}).")
         # A quien se le compra cada producto. El sugerido ya lo trae para lo que
         # el motor calcula; esto cubre el resto (InStock, manuales), que salia sin
         # proveedor y por lo tanto fuera del carro de compra.
-        prov = publicar_proveedor_producto(globals().get("_ULTIMAS_FUENTES") or {})
+        prov = publicar_con_reintentos("el proveedor por producto",
+                                       publicar_proveedor_producto,
+                                       globals().get("_ULTIMAS_FUENTES") or {})
         if prov:
             print(f"  proveedor por producto publicado: {prov.get('filas_cargadas')} productos.")
         # Que codigo esta descontinuado y cual lo reemplaza, para que el comprador
         # no compre uno muerto. La agrupacion ya ocurrio arriba, al armar el mapeo.
-        rep = publicar_reemplazos(globals().get("_ULTIMAS_FUENTES") or {})
+        rep = publicar_con_reintentos("los reemplazos", publicar_reemplazos,
+                                      globals().get("_ULTIMAS_FUENTES") or {})
         if rep:
             print(f"  reemplazos FORD publicados: {rep.get('filas_cargadas')} filas "
                   f"({rep.get('agrupados')} agrupan stock, el resto solo avisa).")
-            recargar_instock()
+            publicar_con_reintentos("InStock", recargar_instock)
     else:
         print(
             f"SOMBRA: paridad {resultado['paridad_pct']}% "
@@ -1202,6 +1272,24 @@ def run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
         ]
         if peores:
             print(f"  mayores divergencias: {', '.join(peores)}")
+
+    if oficial and _FALLOS:
+        # Quedar a medias es peor que no publicar: el sugerido queda con datos
+        # nuevos y las tablas que fallaron con los viejos, sin que nada avise.
+        detalle = "\n".join(f"  - {f['paso']}: {f['error']}" for f in _FALLOS)
+        print("\nLA CARGA QUEDO INCOMPLETA. No se publico:", file=sys.stderr)
+        print(detalle, file=sys.stderr)
+        print("Los datos de la plataforma pueden estar inconsistentes entre si. "
+              "Corre el motor de nuevo cuando la plataforma responda.", file=sys.stderr)
+        if avisar_falla(
+            f"La carga oficial quedo incompleta: fallaron {len(_FALLOS)} paso(s) "
+            "de publicacion.",
+            detalle + "\n\nEl sugerido se publico, pero esas tablas quedaron con "
+            "el dato anterior. Volver a correr el motor.",
+        ):
+            print("  incidencia dejada en la plataforma (los admin ven la campanita).")
+        return 1
+
     return 0
 
 

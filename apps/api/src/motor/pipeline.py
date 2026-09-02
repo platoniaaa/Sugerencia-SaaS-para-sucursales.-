@@ -41,6 +41,24 @@ _LOCAL = ["producto_master", "sucursal_final"]
 _COLS_SERIE = ([f"venta_mes_{i:02d}" for i in range(1, P.VENTANA_M12 + 1)]
                + ["prom_vta_3m", "prom_vta_6m", "prom_vta_12m"])
 
+# Precios de la lista de FORD que son de COMPRA. El precio recomendado es el menor
+# de estos.
+#
+# Quedan FUERA `precio_publico_ford` y `precio_publico_iva_ford`: son lo que paga
+# el cliente, no lo que Curifor le paga a FORD. Hoy no cambiarian ningun
+# resultado -no ganan el minimo en ninguno de los 3.103 productos con precio-,
+# pero hay 13 productos donde el publico esta por debajo del dealer, y el dia que
+# uno de esos quede mas bajo que el resto la columna mostraria un precio de venta
+# como recomendacion de compra.
+_PRECIOS_COMPRA_FORD = [
+    "precio_dealer_ford",
+    "precio_reposicion_ford",
+    "precio_urgente_vor_ford",
+    "precio_promociones_ford",
+    "precio_urgente_recargo15_ford",
+    "precio_flota_ford",
+]
+
 # (nombre en Dim Sucursal ausente) -> nombre que muestra el modelo.
 _NOMBRE_FALLBACK = {
     "TALCA (2)": "Talca (2)",
@@ -319,6 +337,21 @@ def ejecutar(
         r = r.with_columns([pl.lit(None, dtype=pl.Float64).alias(c) for c in faltantes])
     r = r.drop("clave_precio")
 
+    # Precio recomendado de compra: el MENOR de los precios de compra de FORD.
+    #
+    # `min_horizontal` ignora los nulos, asi que un producto al que le falta la
+    # mitad de la lista igual devuelve el menor de lo que si tiene; si no tiene
+    # ninguno, queda nulo (y no cero, que se leeria como "gratis").
+    #
+    # Se descartan los <= 0 antes de comparar: un cero en la lista del fabricante
+    # es un dato que falta, no un regalo, y ganaria el minimo siempre.
+    r = r.with_columns(
+        pl.min_horizontal([
+            pl.when(pl.col(c) > 0).then(pl.col(c)).otherwise(None)
+            for c in _PRECIOS_COMPRA_FORD
+        ]).alias("precio_recomendado_compra")
+    )
+
     # Valor Sugerido CLP = Sugerido * Costo (solo si sugerido>0 y hay costo).
     r = r.with_columns(
         pl.when((pl.col("sugerido") > 0) & pl.col("costo_unitario").is_not_null())
@@ -393,6 +426,7 @@ _CONTRATO: list[tuple[str, str]] = [
     ("precio_promociones_ford", "precio_promociones_ford"),
     ("precio_urgente_recargo15_ford", "precio_urgente_recargo15_ford"),
     ("precio_flota_ford", "precio_flota_ford"),
+    ("precio_recomendado_compra", "precio_recomendado_compra"),
     ("precio_sugerido_gilde", "precio_sugerido_gilde"),
     ("precio_dealer_gilde", "precio_dealer_gilde"),
     ("precio_final_dealer_gilde", "precio_final_dealer_gilde"),
