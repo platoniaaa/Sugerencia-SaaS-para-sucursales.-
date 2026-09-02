@@ -86,3 +86,65 @@ def test_la_columna_viaja_en_el_contrato_a_la_plataforma():
         assert '("precio_recomendado_compra", "precio_recomendado_compra")' in texto
     else:
         assert "precio_recomendado_compra" in salida
+
+
+# --- De que lista salio el precio ------------------------------------------------
+
+ETIQUETAS = pipeline._PRECIOS_COMPRA_FORD_ETIQUETA
+
+
+def _tipo(**precios) -> str | None:
+    """Corre la misma expresion del pipeline: minimo primero, etiqueta despues."""
+    fila = {c: [precios.get(c)] for c in PRECIOS}
+    df = pl.DataFrame(fila, schema={c: pl.Float64 for c in PRECIOS}).with_columns(
+        pl.min_horizontal([
+            pl.when(pl.col(c) > 0).then(pl.col(c)).otherwise(None) for c in PRECIOS
+        ]).alias("precio_recomendado_compra")
+    )
+    return df.select(
+        pl.coalesce([
+            pl.when((pl.col(c) > 0)
+                    & (pl.col(c) == pl.col("precio_recomendado_compra")))
+            .then(pl.lit(e)).otherwise(None)
+            for c, e in ETIQUETAS
+        ]).alias("t")
+    )["t"][0]
+
+
+def test_dice_de_que_lista_salio_el_precio_mas_barato():
+    assert _tipo(precio_dealer_ford=42176.0, precio_flota_ford=32422.0) == "Flota"
+
+
+def test_una_promocion_se_muestra_como_tal():
+    """Es el caso que cambia la decision: si el precio bajo es una promo, conviene
+    pedir ahora."""
+    assert _tipo(precio_dealer_ford=42176.0, precio_promociones_ford=35000.0) == "Promociones"
+
+
+def test_cuando_todos_empatan_dice_Dealer():
+    """FORD publica dealer, reposicion, urgente VOR y promociones con el mismo
+    valor en la mayoria de los productos.
+
+    Con empate la respuesta util es "es el precio normal". Decir "Promociones"
+    mandaria al comprador a buscar una promocion que no existe.
+    """
+    assert _tipo(
+        precio_dealer_ford=42176.0,
+        precio_reposicion_ford=42176.0,
+        precio_urgente_vor_ford=42176.0,
+        precio_promociones_ford=42176.0,
+    ) == "Dealer"
+
+
+def test_sin_precios_no_hay_tipo():
+    assert _tipo() is None
+
+
+def test_un_cero_no_puede_ganar_la_etiqueta():
+    """Si el cero ganara el minimo, ademas etiquetaria mal el tipo."""
+    assert _tipo(precio_dealer_ford=0.0, precio_flota_ford=32422.0) == "Flota"
+
+
+def test_el_tipo_viaja_en_el_contrato():
+    with open(pipeline.__file__, encoding="utf-8") as f:
+        assert '("tipo_precio_recomendado", "tipo_precio_recomendado")' in f.read()

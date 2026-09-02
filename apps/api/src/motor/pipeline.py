@@ -50,14 +50,22 @@ _COLS_SERIE = ([f"venta_mes_{i:02d}" for i in range(1, P.VENTANA_M12 + 1)]
 # pero hay 13 productos donde el publico esta por debajo del dealer, y el dia que
 # uno de esos quede mas bajo que el resto la columna mostraria un precio de venta
 # como recomendacion de compra.
-_PRECIOS_COMPRA_FORD = [
-    "precio_dealer_ford",
-    "precio_reposicion_ford",
-    "precio_urgente_vor_ford",
-    "precio_promociones_ford",
-    "precio_urgente_recargo15_ford",
-    "precio_flota_ford",
+#
+# El orden IMPORTA: es el que desempata. FORD publica dealer, reposicion, urgente
+# VOR y promociones con el mismo valor en la mayoria de los productos, asi que casi
+# siempre hay empate en el minimo. Se muestra el primero de esta lista que lo
+# alcanza, y por eso "Dealer" va primero: cuando todos empatan, la respuesta util
+# es "es el precio normal", no "es una promocion" -que haria salir a buscar una
+# promo que no existe-.
+_PRECIOS_COMPRA_FORD_ETIQUETA = [
+    ("precio_dealer_ford", "Dealer"),
+    ("precio_flota_ford", "Flota"),
+    ("precio_promociones_ford", "Promociones"),
+    ("precio_reposicion_ford", "Reposicion"),
+    ("precio_urgente_vor_ford", "Urgente VOR"),
+    ("precio_urgente_recargo15_ford", "Urgente +15%"),
 ]
+_PRECIOS_COMPRA_FORD = [c for c, _ in _PRECIOS_COMPRA_FORD_ETIQUETA]
 
 # (nombre en Dim Sucursal ausente) -> nombre que muestra el modelo.
 _NOMBRE_FALLBACK = {
@@ -351,6 +359,19 @@ def ejecutar(
             for c in _PRECIOS_COMPRA_FORD
         ]).alias("precio_recomendado_compra")
     )
+    # De que lista salio ese precio. Sin esto, "$32.422" no dice si es una promo,
+    # el precio de flota o el normal, que es justo lo que decide si conviene pedir
+    # ahora o esperar. `coalesce` toma la PRIMERA etiqueta que alcanza el minimo,
+    # y el orden de la lista es el desempate.
+    r = r.with_columns(
+        pl.coalesce([
+            pl.when((pl.col(c) > 0)
+                    & (pl.col(c) == pl.col("precio_recomendado_compra")))
+            .then(pl.lit(etiqueta))
+            .otherwise(None)
+            for c, etiqueta in _PRECIOS_COMPRA_FORD_ETIQUETA
+        ]).alias("tipo_precio_recomendado")
+    )
 
     # Valor Sugerido CLP = Sugerido * Costo (solo si sugerido>0 y hay costo).
     r = r.with_columns(
@@ -427,6 +448,7 @@ _CONTRATO: list[tuple[str, str]] = [
     ("precio_urgente_recargo15_ford", "precio_urgente_recargo15_ford"),
     ("precio_flota_ford", "precio_flota_ford"),
     ("precio_recomendado_compra", "precio_recomendado_compra"),
+    ("tipo_precio_recomendado", "tipo_precio_recomendado"),
     ("precio_sugerido_gilde", "precio_sugerido_gilde"),
     ("precio_dealer_gilde", "precio_dealer_gilde"),
     ("precio_final_dealer_gilde", "precio_final_dealer_gilde"),
