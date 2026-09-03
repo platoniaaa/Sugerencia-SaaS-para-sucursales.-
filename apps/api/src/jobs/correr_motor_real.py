@@ -1114,7 +1114,30 @@ def avisar_falla(motivo: str, detalle: str = "") -> bool:
 
 
 def enviar(csv_path: Path, oficial: bool = False) -> dict:
-    """Sube el CSV a la plataforma: comparacion (sombra) o carga (oficial)."""
+    """Sube el CSV a la plataforma: comparacion (sombra) o carga (oficial).
+
+    Reintenta los 502/503 igual que los pasos de publicacion. Es LA llamada que
+    importa -sin ella no hay sugerido nuevo- y sin embargo era la unica sin
+    proteccion: el 03-09-2026 la corrida murio con un 502 en
+    `/api/admin/cargar-sugerido` mientras Render despertaba, y quedo todo el dia
+    con el dato de ayer.
+    """
+    ultimo: Exception | None = None
+    for intento in range(1, REINTENTOS + 1):
+        try:
+            return _enviar_una_vez(csv_path, oficial)
+        except Exception as e:  # noqa: BLE001
+            ultimo = e
+            if not _es_transitorio(e) or intento == REINTENTOS:
+                raise
+            espera = ESPERA_BASE_SEG * intento
+            print(f"  la plataforma no respondio ({e}); reintentando la carga en "
+                  f"{espera}s (intento {intento + 1} de {REINTENTOS})...")
+            time.sleep(espera)
+    raise ultimo  # pragma: no cover - el for siempre sale por return o raise
+
+
+def _enviar_una_vez(csv_path: Path, oficial: bool = False) -> dict:
     import httpx
 
     # Las credenciales vienen del entorno o del .env del repo (donde las deja el

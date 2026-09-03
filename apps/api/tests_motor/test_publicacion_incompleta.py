@@ -147,3 +147,66 @@ def test_el_fallo_guarda_el_paso_y_el_error():
     assert f["paso"] == "el transito"
     assert "503" in f["error"]
     assert f["transitorio"] is True
+
+
+# --- La carga principal tambien reintenta ---------------------------------------
+#
+# `enviar()` era la unica llamada sin proteccion, y es LA que importa: sin ella no
+# hay sugerido nuevo. El 03-09-2026 la corrida murio con un 502 en
+# `/api/admin/cargar-sugerido` mientras Render despertaba y la plataforma quedo
+# todo el dia con el dato del dia anterior.
+
+
+def _respuesta(codigo: int) -> httpx.HTTPStatusError:
+    pedido = httpx.Request("POST", "https://x/api/admin/cargar-sugerido")
+    return httpx.HTTPStatusError(
+        f"Server error '{codigo}' for url", request=pedido,
+        response=httpx.Response(codigo, request=pedido))
+
+
+def test_la_carga_principal_reintenta_el_502(monkeypatch, tmp_path):
+    intentos = {"n": 0}
+
+    def falso(csv_path, oficial=False):
+        intentos["n"] += 1
+        if intentos["n"] == 1:
+            raise _respuesta(502)
+        return {"filas_cargadas": 17100}
+
+    monkeypatch.setattr(motor, "_enviar_una_vez", falso)
+    monkeypatch.setattr(motor.time, "sleep", lambda s: None)
+
+    assert motor.enviar(tmp_path / "x.csv", oficial=True)["filas_cargadas"] == 17100
+    assert intentos["n"] == 2
+
+
+def test_la_carga_principal_no_reintenta_lo_que_no_es_transitorio(monkeypatch, tmp_path):
+    """Un 401 o un CSV mal formado no se arreglan esperando."""
+    intentos = {"n": 0}
+
+    def falso(csv_path, oficial=False):
+        intentos["n"] += 1
+        raise _respuesta(401)
+
+    monkeypatch.setattr(motor, "_enviar_una_vez", falso)
+    monkeypatch.setattr(motor.time, "sleep", lambda s: None)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        motor.enviar(tmp_path / "x.csv", oficial=True)
+    assert intentos["n"] == 1
+
+
+def test_si_la_plataforma_no_vuelve_la_carga_falla(monkeypatch, tmp_path):
+    """Reintentar no es tapar: agotados los intentos, el error sale y el job cae."""
+    intentos = {"n": 0}
+
+    def falso(csv_path, oficial=False):
+        intentos["n"] += 1
+        raise _respuesta(503)
+
+    monkeypatch.setattr(motor, "_enviar_una_vez", falso)
+    monkeypatch.setattr(motor.time, "sleep", lambda s: None)
+
+    with pytest.raises(httpx.HTTPStatusError):
+        motor.enviar(tmp_path / "x.csv", oficial=True)
+    assert intentos["n"] == motor.REINTENTOS
