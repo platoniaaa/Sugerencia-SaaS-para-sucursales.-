@@ -1178,6 +1178,20 @@ FRESCURA_DIAS = {
     "mix_reemplazos": 120,
 }
 
+# Archivos cuyo atraso se AVISA pero no frena la carga.
+#
+# `ventas_frontera` son las ventas de la otra empresa (E07). Medido el 28-08-2026
+# sobre 17.100 filas: 49 son Solo Frontera y NINGUNA de ellas pide algo; el 95,5%
+# del valor sugerido es Curifor puro. Que ese archivo tenga un mes de atraso no
+# cambia una decision de compra.
+#
+# Tenerlo como bloqueante dejo la carga diaria caida 8 dias seguidos (27-08 al
+# 03-09-2026) y obligo a publicar a mano con --ignorar-frescura, que de paso
+# apagaba la guarda para TODOS los demas archivos, incluido el stock, que si
+# importa. Una guarda que obliga a saltearse todas las guardas es peor que no
+# tenerla.
+FRESCURA_SOLO_AVISA = {"ventas_frontera"}
+
 
 def revisar_frescura(hoy: date | None = None) -> list[str]:
     """Archivos que llevan demasiado sin actualizarse.
@@ -1196,8 +1210,21 @@ def revisar_frescura(hoy: date | None = None) -> list[str]:
             continue
         edad = (hoy - date.fromtimestamp(ruta.stat().st_mtime)).days
         if edad > dias:
-            viejos.append(f"{ruta.name}: {edad} dias (se espera al dia cada {dias})")
+            aviso = f"{ruta.name}: {edad} dias (se espera al dia cada {dias})"
+            if fuente in FRESCURA_SOLO_AVISA:
+                aviso += " - no frena la carga"
+            viejos.append(aviso)
     return viejos
+
+
+def frescura_que_frena(hoy: date | None = None) -> list[str]:
+    """Solo los atrasos que justifican NO publicar.
+
+    Se separa de `revisar_frescura` para que el aviso se siga viendo en el log aun
+    cuando el archivo no frene nada: el dato viejo se informa igual, lo que cambia
+    es que ya no bloquea la corrida entera.
+    """
+    return [v for v in revisar_frescura(hoy) if "no frena la carga" not in v]
 
 
 def run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
@@ -1214,10 +1241,11 @@ def run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
             print("  incidencia dejada en la plataforma (los admin ven la campanita).")
         return 1
 
-    if viejos and oficial and not ignorar_frescura:
+    bloqueantes = frescura_que_frena()
+    if bloqueantes and oficial and not ignorar_frescura:
         return _fallar(
             "No se carga a produccion con archivos desactualizados.",
-            "Archivos vencidos:\n  - " + "\n  - ".join(viejos)
+            "Archivos vencidos:\n  - " + "\n  - ".join(bloqueantes)
             + "\n\nActualizalos en la carpeta de datos, o corre con "
             "--ignorar-frescura si sabes que asi corresponde.",
         )
