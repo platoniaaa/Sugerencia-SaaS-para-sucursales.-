@@ -52,6 +52,8 @@ SALIDA = _API_DIR / "data" / "sugerido_motor.csv"
 SALIDA_LT = _API_DIR / "data" / "lead_time_motor.csv"
 SALIDA_STOCK = _API_DIR / "data" / "stock_unificado_motor.csv"
 SALIDA_TRANSITO = _API_DIR / "data" / "stock_transito_motor.csv"
+SALIDA_COSTOS = _API_DIR / "data" / "costos_precios_motor.csv"
+SALIDA_COMPRAS = _API_DIR / "data" / "compras_precios_motor.csv"
 
 
 def _leer_env() -> dict[str, str]:
@@ -252,6 +254,8 @@ def construir_csv(hoy: date | None = None) -> Path:
     # El stock por bodega: la plataforma lo muestra en la ficha del catalogo. Antes
     # esa tabla la llenaba el Power BI Desktop y al retirarlo quedo congelada.
     _guardar_stock_unificado(fuentes)
+    _guardar_costos_precios(fuentes)
+    _guardar_compras_precios()
     # El transito de TODOS los productos, no solo de los que el sugerido evalua.
     _guardar_transito(fuentes)
     # Las fuentes quedan a mano para que `run` publique la equivalencia de SKU
@@ -849,6 +853,186 @@ def _guardar_lead_time(fuentes: dict) -> Path | None:
     return SALIDA_LT
 
 
+
+# --------------------------------------------------------------- lista de precios
+# El modulo de precios de la plataforma calcula Precio = Costo x Factor. Necesita
+# dos cosas que solo el motor tiene: el COSTO de todos los productos (el sugerido
+# solo cubre lo que evalua) y la ULTIMA COMPRA por producto, que decide si es
+# Importado o Nacional. Las dos salen de archivos que el motor ya lee.
+
+def _guardar_costos_precios(fuentes: dict) -> Path | None:
+    """Costo por producto desde el Excel de stock (columna Costo), las dos empresas.
+
+    El stock unificado tira esta columna porque el catalogo no la usa. Aca se
+    guarda aparte: es la unica fuente de costo para los ~60k productos de la
+    lista de precios que el sugerido no evalua."""
+    import polars as pl
+
+    partes = []
+    for clave in ("stock_bodegas", "stock_bodegas_frontera"):
+        df = fuentes.get(clave)
+        if df is None or df.is_empty() or "Costo" not in df.columns:
+            continue
+        partes.append(
+            df.select(
+                pl.col("Producto").cast(pl.Utf8).alias("producto"),
+                pl.col("Costo").cast(pl.Float64, strict=False).alias("costo"),
+            )
+        )
+    if not partes:
+        return None
+    (
+        pl.concat(partes)
+        .filter(pl.col("producto").is_not_null() & (pl.col("costo") > 0))
+        # Un producto esta en varias bodegas con el mismo costo; si difiere, se
+        # toma el mayor (la ultima compra empuja el promedio hacia arriba).
+        .group_by("producto").agg(pl.col("costo").max())
+        .write_csv(SALIDA_COSTOS)
+    )
+    return SALIDA_COSTOS
+
+
+def _guardar_compras_precios() -> Path | None:
+    """Ultima compra por producto, separando importado de nacional.
+
+    Es la regla de procedencia que pidio Abastecimiento: si la compra mas
+    reciente esta en el seguimiento de importacion es Importado, si esta en el
+    nacional es Nacional. Frontera cuenta como nacional.
+
+    Se leen los tres Excel por separado a proposito: `fuentes["seguimiento"]` ya
+    viene unido y ahi se pierde de cual archivo salio cada fila, que es
+    justamente el dato que decide.
+    """
+    import polars as pl
+
+    from ..motor import lectores_excel as lx
+
+    lecturas = (
+        ("seguimiento_curifor_importado", lx.leer_seguimiento_importado_excel, "ult_recep_importado"),
+        ("seguimiento_curifor_nacional", lx.leer_seguimiento_nacional_excel, "ult_pe_nacional"),
+        ("seguimiento_frontera", lx.leer_seguimiento_frontera_excel, "ult_pe_nacional"),
+    )
+    por_producto: dict[str, dict[str, str]] = {}
+    for fuente, leer, campo in lecturas:
+        ruta = _buscar(fuente, obligatorio=False)
+        if ruta is None:
+            continue
+        try:
+            df = leer(ruta)
+        except Exception as e:  # noqa: BLE001 - un seguimiento ilegible no frena el resto
+            print(f"    aviso: no pude leer {fuente} para la procedencia ({type(e).__name__}: {e})")
+            continue
+        if df.is_empty() or "FechaPE" not in df.columns:
+            continue
+        # FechaPE es la fecha en que la mercaderia queda disponible: recepcion en
+        # el importado y en frontera, Documento P/E en el nacional.
+        ult = (
+            df.select("Producto", "FechaPE")
+            .drop_nulls()
+            .group_by("Producto").agg(pl.col("FechaPE").max())
+        )
+        for prod, fecha in ult.iter_rows():
+            if prod is None or fecha is None:
+                continue
+            clave = str(prod).strip()
+            if not clave:
+                continue
+            actual = por_producto.setdefault(clave, {})
+            iso = fecha.isoformat()[:10]
+            # Frontera y nacional escriben el mismo campo: gana la mas reciente.
+            if iso > actual.get(campo, ""):
+                actual[campo] = iso
+    if not por_producto:
+        return None
+    filas = [{"producto": p, **v} for p, v in por_producto.items()]
+    pl.DataFrame(filas).write_csv(SALIDA_COMPRAS)
+    return SALIDA_COMPRAS
+
+
+def _publicar_json(paso: str, ruta: str, filas: list[dict]) -> dict | None:
+    """POST autenticado a un endpoint de administracion. Devuelve None si falla."""
+    import httpx
+
+    if not filas:
+        return None
+    base, email, password = _credenciales()
+    if not email or not password:
+        return None
+    try:
+        with httpx.Client(timeout=600) as c:
+            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
+            r.raise_for_status()
+            cab = {"Authorization": f"Bearer {r.json()['token']}"}
+            r = c.post(f"{base}{ruta}", headers=cab, json={"filas": filas})
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:  # noqa: BLE001 - publicar nunca debe romper la carga
+        fallo_publicacion(paso, e)
+        return None
+
+
+def publicar_costos_precios() -> dict | None:
+    """Sube el costo de todos los productos para la lista de precios."""
+    import csv
+
+    if not SALIDA_COSTOS.exists():
+        return None
+    with open(SALIDA_COSTOS, encoding="utf-8", newline="") as f:
+        filas = [{"producto": r["producto"], "costo": float(r["costo"])}
+                 for r in csv.DictReader(f) if r.get("producto")]
+    return _publicar_json("los costos de precios", "/api/admin/precios/costos", filas)
+
+
+def publicar_compras_precios() -> dict | None:
+    """Sube la ultima compra por producto (decide Importado / Nacional)."""
+    import csv
+
+    if not SALIDA_COMPRAS.exists():
+        return None
+    with open(SALIDA_COMPRAS, encoding="utf-8", newline="") as f:
+        filas = []
+        for r in csv.DictReader(f):
+            if not r.get("producto"):
+                continue
+            fila = {"producto": r["producto"]}
+            for campo in ("ult_recep_importado", "ult_pe_nacional"):
+                if r.get(campo):
+                    fila[campo] = r[campo]
+            if len(fila) > 1:
+                filas.append(fila)
+    return _publicar_json("las compras de precios", "/api/admin/precios/compras", filas)
+
+
+def recalcular_precios() -> dict | None:
+    """Recalcula la lista de precios con el costo, stock y compras recien subidos.
+
+    Va al final: si corriera antes, calcularia con los datos de ayer. Lo que
+    cambie queda marcado en la plataforma para que Abastecimiento lo revise
+    antes de exportar al ERP.
+    """
+    import httpx
+
+    base, email, password = _credenciales()
+    if not email or not password:
+        return None
+    try:
+        with httpx.Client(timeout=900) as c:
+            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
+            r.raise_for_status()
+            r = c.post(
+                f"{base}/api/precios/recalcular",
+                headers={"Authorization": f"Bearer {r.json()['token']}"},
+            )
+            if r.status_code == 404:
+                # Plataforma sin el modulo desplegado todavia: no es un fallo.
+                return None
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:  # noqa: BLE001
+        fallo_publicacion("el recalculo de precios", e)
+        return None
+
+
 def publicar_lead_time() -> dict | None:
     """Sube a la plataforma el lead time calculado (reemplaza la foto vigente)."""
     import csv
@@ -1311,6 +1495,18 @@ def run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
             print(f"  reemplazos FORD publicados: {rep.get('filas_cargadas')} filas "
                   f"({rep.get('agrupados')} agrupan stock, el resto solo avisa).")
             publicar_con_reintentos("InStock", recargar_instock)
+        # La lista de precios: costo de todos los productos y ultima compra (que
+        # decide Importado/Nacional). El recalculo va al final, con todo arriba.
+        cos = publicar_con_reintentos("los costos de precios", publicar_costos_precios)
+        if cos:
+            print(f"  costos de precios publicados: {cos.get('actualizados')} productos.")
+        com = publicar_con_reintentos("las compras de precios", publicar_compras_precios)
+        if com:
+            print(f"  compras de precios publicadas: {com.get('actualizados')} productos.")
+        pre = publicar_con_reintentos("el recalculo de precios", recalcular_precios)
+        if pre:
+            print(f"  precios recalculados: {pre.get('productos')} productos, "
+                  f"{pre.get('cambios')} cambios en {pre.get('productos_con_cambios')}.")
     else:
         print(
             f"SOMBRA: paridad {resultado['paridad_pct']}% "
