@@ -10,6 +10,7 @@ Si algún cambio futuro al motor rompe la paridad, estos tests fallan señalando
 etapa y las filas afectadas. Para regenerar los fixtures: `python -m tests_motor.regenerar_fixtures`.
 """
 import math
+from contextlib import contextmanager
 from datetime import date
 from pathlib import Path
 
@@ -42,8 +43,45 @@ def fuentes():
     return pipeline.cargar_fuentes(FIXT)
 
 
-@pytest.fixture(scope="module")
-def etapas(fuentes):
+@contextmanager
+def _gestion(dias: int):
+    """Fija los dias de gestion de Abastecimiento mientras dure el bloque."""
+    from src.motor import parametros as P
+
+    original = P.LT_GESTION_ABASTECIMIENTO_DIAS
+    P.LT_GESTION_ABASTECIMIENTO_DIAS = dias
+    try:
+        yield
+    finally:
+        P.LT_GESTION_ABASTECIMIENTO_DIAS = original
+
+
+@contextmanager
+def _como_el_dax():
+    """El motor con las reglas que tenia el DAX cuando se congelaron los goldens.
+
+    Hoy son tres: el dia de gestion de Abastecimiento, la regla de centralizacion
+    en el CD y el lead time de fallback (era 8 dias, ahora 3). Se apagan aca para que los goldens sigan validando TODO lo demas;
+    cada regla nueva tiene su propio test. Cada divergencia que se le agregue al
+    motor se apaga en este mismo lugar.
+    """
+    from src.motor import parametros as P
+
+    clases, solo_d = P.CENTRALIZACION_CLASES_LOCALES, P.CENTRALIZACION_AGREGADA_SOLO_D
+    fallback = P.LT_FALLBACK_DIAS
+    P.CENTRALIZACION_CLASES_LOCALES = ("C", "D")
+    P.CENTRALIZACION_AGREGADA_SOLO_D = False
+    P.LT_FALLBACK_DIAS = 8
+    try:
+        with _gestion(0):
+            yield
+    finally:
+        P.CENTRALIZACION_CLASES_LOCALES = clases
+        P.CENTRALIZACION_AGREGADA_SOLO_D = solo_d
+        P.LT_FALLBACK_DIAS = fallback
+
+
+def _calcular_etapas(fuentes):
     abc = clasificacion_abc.calcular_abc(fuentes["ventas"], fuentes["mapeo"], fuentes["dim_producto"], FIN)
     dem = demanda_mod.calcular_demanda(fuentes["ventas"], fuentes["mapeo"], fuentes["dim_producto"], abc, FIN)
     lt = lead_time_mod.calcular_lead_time(
@@ -56,6 +94,23 @@ def etapas(fuentes):
     )
     tr = traslados_mod.calcular_traslados(sug, fuentes["mapeo"], fuentes["stock"], fuentes["stock_frontera"], fuentes["dim_sucursal"])
     return {"abc": abc, "dem": dem, "lt": lt, "ss": ss, "sug": sug, "tr": tr}
+
+
+@pytest.fixture(scope="module")
+def etapas(fuentes):
+    """Las etapas calculadas con las reglas del DAX (ver `_como_el_dax`).
+
+    Los goldens son la foto del DAX de julio. Cada divergencia deliberada que se le
+    agrega al motor se apaga aca, para que sigan validando TODO lo demas: son la
+    unica red que avisa cuando un cambio rompe algo que no se queria tocar.
+
+    A diferencia del ciclo de orden 3->5 —que solo movio las filas abastecidas por
+    CD y por eso se pudo excluir ese subconjunto con `_solo_directo`—, el dia de
+    gestion afecta a filas de todo el universo, asi que no quedaria nada contra que
+    comparar. Se valida aparte, en `test_gestion_abastecimiento_suma_un_dia`.
+    """
+    with _como_el_dax():
+        return _calcular_etapas(fuentes)
 
 
 def _motor_key(df: pl.DataFrame) -> pl.DataFrame:
@@ -104,6 +159,82 @@ def _solo_directo(golden: pl.DataFrame, etapas) -> pl.DataFrame:
     return golden.join(cd, on=CLAVE, how="anti")
 
 
+def test_gestion_abastecimiento_suma_un_dia(fuentes):
+    """Regla nueva (Abastecimiento, 13-ago): el LT del proveedor lleva +1 día.
+
+    El lead time se mide desde la fecha de la OC hasta la recepción, así que el
+    tramo previo —revisar el sugerido, decidir, emitir la orden— no estaba contado
+    en ninguna parte: el modelo asumía que la OC sale el mismo día que aparece la
+    necesidad.
+
+    Se verifica comparando el motor consigo mismo con y sin el día, que es la única
+    forma de aislar el efecto: los goldens no lo tienen.
+    """
+    with _gestion(0):
+        sin = _calcular_etapas(fuentes)["lt"]
+    with _gestion(1):
+        con = _calcular_etapas(fuentes)["lt"]
+
+    j = sin.select(["producto_master", "sucursal_final", "lead_time_dias", "lt_efectivo",
+                    "lt_cd_a_sucursal_dias", "abastece_cd"]).join(
+        con.select(["producto_master", "sucursal_final", "lead_time_dias", "lt_efectivo",
+                    "lt_cd_a_sucursal_dias"]),
+        on=["producto_master", "sucursal_final"], how="inner", suffix="_con",
+    )
+    assert j.height > 0
+
+    # El LT del proveedor sube exactamente 1 día en TODAS las filas.
+    d = j.select((pl.col("lead_time_dias_con") - pl.col("lead_time_dias")).alias("d"))
+    distintos = d.filter((pl.col("d") - 1.0).abs() > 1e-9)
+    assert distintos.height == 0, f"{distintos.height} filas no subieron exactamente 1 día"
+
+    # El traslado CD -> sucursal NO lo lleva: ahí no hay compra que gestionar.
+    cd = j.select(
+        (pl.col("lt_cd_a_sucursal_dias_con") - pl.col("lt_cd_a_sucursal_dias")).alias("d")
+    ).filter(pl.col("d").abs() > 1e-9)
+    assert cd.height == 0, f"{cd.height} filas cambiaron el LT del CD, que no debe moverse"
+
+    # Y por lo mismo, el LT EFECTIVO de una fila abastecida por CD tampoco cambia.
+    por_cd = j.filter(pl.col("abastece_cd") == "Si").select(
+        (pl.col("lt_efectivo_con") - pl.col("lt_efectivo")).alias("d")
+    ).filter(pl.col("d").abs() > 1e-9)
+    assert por_cd.height == 0, (
+        f"{por_cd.height} filas de CD movieron su LT efectivo: la gestión se está "
+        "sumando donde no corresponde"
+    )
+
+    # Las de compra directa sí: son las que gatillan la orden al proveedor.
+    directas = j.filter(pl.col("abastece_cd") != "Si")
+    if directas.height:
+        d_dir = directas.select(
+            (pl.col("lt_efectivo_con") - pl.col("lt_efectivo")).alias("d")
+        ).filter((pl.col("d") - 1.0).abs() > 1e-9)
+        assert d_dir.height == 0, f"{d_dir.height} filas de compra directa no subieron 1 día"
+
+
+def test_rancagua_2_sigue_fusionada_en_rancagua(fuentes):
+    """Rancagua 2 ES una sucursal distinta, pero el motor la fusiona a proposito.
+
+    Se intento separarla el 18-ago-2026 y hace COMPRAR DE MAS. El sugerido solo
+    crea filas para productos con demanda en la sucursal: Rancagua 2 vende 1.223
+    lineas contra 20.330 de Rancagua, asi que de los 456 productos con stock en su
+    bodega solo 7 quedaban con fila. Las otras 5.104 unidades desaparecian del
+    modelo -stock real que nadie descuenta- y el sugerido total subia $4,3 millones.
+
+    Separarla exige que el motor evalue una sucursal por su STOCK y no solo por su
+    venta. Este test existe para que el dia que alguien lo intente de nuevo, falle
+    aca y lea el motivo antes de publicar.
+    """
+    etapas = _calcular_etapas(fuentes)
+    sucs = set(etapas["abc"]["sucursal_final"].unique().to_list())
+    assert "RANCAGUA 2" not in sucs, (
+        "Rancagua 2 aparece como sucursal propia. Si es intencional, hay que "
+        "resolver antes el stock huerfano: ver parametros.FUSIONES_SUCURSAL"
+    )
+    from src.motor import parametros as P
+    assert P.FUSIONES_SUCURSAL.get("RANCAGUA 2") == "RANCAGUA"
+
+
 def test_ciclo_orden_cd_es_5(etapas):
     """Regla nueva (Marilyn, 24-jul): el ciclo de orden vía CD es 5, no 3.
 
@@ -124,8 +255,13 @@ def test_ciclo_orden_cd_es_5(etapas):
     )
     assert cd.height > 0, "el fixture no tiene filas abastecidas por CD para probar"
 
+    # Se recorren TODAS (205 en el fixture), no una muestra. Antes eran `head(25)`
+    # sobre el resultado de un join, cuyo orden polars no garantiza: de las 205
+    # candidatas solo 16 distinguen CO=5 de CO=3, asi que segun que 25 salieran
+    # primero el test pasaba o fallaba con el MISMO codigo. Era intermitente y no
+    # avisaba de nada real. Recorrerlas todas es barato y ademas prueba mas.
     revisadas = 0
-    for row in cd.head(25).iter_rows(named=True):
+    for row in cd.iter_rows(named=True):
         es_cd_suc = row["sucursal_final"] == "CD REPUESTOS"
         clase = row["clasificacion_abc_agregada"] if es_cd_suc else row["clasificacion_abc"]
         if row["es_importado"] and clase in z_imp_cd:

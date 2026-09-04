@@ -374,24 +374,78 @@ def leer_ventas_frontera_excel(ruta: str | Path) -> pl.DataFrame:
 # --------------------------------------------------------------------------- #
 # Listado maestro de repuestos y base de reemplazos
 # --------------------------------------------------------------------------- #
-def leer_listado_maestro(ruta: str | Path) -> pl.DataFrame:
-    """'Listado Maestro Repuestos' (export de Flexline en CSV) -> Producto, Categoria.
+# Columnas que el motor usa del maestro. Las dos primeras son obligatorias.
+COLS_MAESTRO = ("Producto", "Categoria", "Glosa", "Unidad", "Familia")
 
-    El export viene con `;`, en latin-1 y SIN entrecomillar: hay glosas con comillas
-    sueltas (medidas en pulgadas) que rompen el parser si se interpretan como
-    delimitador de texto, por eso `quote_char=None`.
-    """
-    df = pl.read_csv(
-        ruta, separator=";", encoding="latin-1", quote_char=None, infer_schema_length=0
+# Hojas donde ha vivido el maestro dentro de la planilla de precios, en orden de
+# preferencia. Se comparan normalizadas (sin tildes ni simbolos).
+HOJAS_LISTADO_MAESTRO = ("Lista sin duplicados", "Listado Maestro", "Maestro")
+
+
+def _hoja_maestro(disponibles: list[str], hoja: str | None) -> str | None:
+    """Nombre REAL de la hoja del maestro dentro del libro, o None si no esta."""
+    por_norm = {_norm(n): n for n in disponibles}
+    for candidata in ([hoja] if hoja else HOJAS_LISTADO_MAESTRO):
+        real = por_norm.get(_norm(candidata))
+        if real is not None:
+            return real
+    return None
+
+
+def _leer_maestro_excel(ruta: Path, hoja: str | None) -> pl.DataFrame:
+    import fastexcel  # el motor que usa pl.read_excel; aca se usa para elegir la hoja
+
+    libro = fastexcel.read_excel(str(ruta))
+    elegida = _hoja_maestro(libro.sheet_names, hoja)
+    if elegida is None:
+        raise ValueError(
+            f"{ruta.name} no trae la hoja del listado maestro (se buscaron "
+            f"{list(HOJAS_LISTADO_MAESTRO)}). Hojas del archivo: {libro.sheet_names}. "
+            "Si el archivo no es el maestro, revisa los patrones de la fuente 'catalogo'."
+        )
+    # Se leen SOLO las columnas que el motor usa: la hoja real trae 52 columnas y
+    # 410.000 filas, y pedir las cinco que importan baja la lectura de minutos a
+    # segundos. El sondeo previo (n_rows=0) es para tolerar que falte una opcional.
+    presentes = {c.name for c in libro.load_sheet(elegida, n_rows=0).available_columns()}
+    return pl.read_excel(
+        ruta, sheet_name=elegida, columns=[c for c in COLS_MAESTRO if c in presentes]
     )
+
+
+def leer_listado_maestro(ruta: str | Path, hoja: str | None = None) -> pl.DataFrame:
+    """'Listado Maestro Repuestos' -> Producto, Categoria (+ Glosa, Unidad, Familia).
+
+    De aqui sale la Categoria que deja COLISION y CAMPANAS fuera del sugerido. La
+    fuente ha venido de dos formas y se aceptan las dos:
+
+    - CSV (export de Flexline, "lista rep (lista precios).csv"): viene con `;`, en
+      latin-1 y SIN entrecomillar; hay glosas con comillas sueltas (medidas en
+      pulgadas) que rompen el parser si se interpretan como delimitador de texto,
+      por eso `quote_char=None`.
+    - Excel ("LISTA DE PRECIOS.xlsx", hoja "Lista sin duplicados"): desde jul-2026
+      el maestro dejo de exportarse aparte y vive como una hoja de la planilla de
+      precios de Curifor.
+
+    Todo sale como texto, como salia del CSV con `infer_schema_length=0`: el Excel
+    infiere tipos por columna y aguas abajo se compara y se joinea contra texto.
+    """
+    ruta = Path(ruta)
+    if ruta.suffix.lower() == ".csv":
+        df = pl.read_csv(
+            ruta, separator=";", encoding="latin-1", quote_char=None, infer_schema_length=0
+        )
+    else:
+        df = _leer_maestro_excel(ruta, hoja)
     faltan = {"Producto", "Categoria"} - set(df.columns)
     if faltan:
         raise ValueError(
-            f"El listado maestro {Path(ruta).name} no trae {sorted(faltan)}. "
+            f"El listado maestro {ruta.name} no trae {sorted(faltan)}. "
             f"Columnas encontradas: {df.columns[:12]}"
         )
-    cols = ["Producto", "Categoria"] + [c for c in ("Glosa", "Unidad", "Familia") if c in df.columns]
-    return df.select(cols).with_columns(pl.col("Producto").str.strip_chars())
+    cols = [c for c in COLS_MAESTRO if c in df.columns]
+    return df.select(cols).with_columns(
+        pl.all().cast(pl.Utf8, strict=False)
+    ).with_columns(pl.col("Producto").str.strip_chars())
 
 
 # La Hoja2 del "BASE NUEVO MIX" es la que lee el modelo (no Hoja1, que es una tabla
@@ -486,6 +540,181 @@ def _leer_precios(ruta: str | Path, col_codigo: str, mapa: dict[str, str]) -> pl
 
 def leer_precios_ford(ruta: str | Path) -> pl.DataFrame:
     return _leer_precios(ruta, "PartNumber", COLUMNAS_PRECIOS_FORD)
+
+
+# Columnas de reemplazo de la extraccion FORD WINGS (desde ago-2026). Vienen en la
+# misma hoja 'Precios' y son opcionales: una lista vieja sin ellas se lee igual.
+COLUMNAS_REEMPLAZO_FORD = [
+    "Reemplazado_Por", "Cadena_Reemplazo", "Reemplaza_A",
+    "Estado_Reemplazo", "Reemplazo_Aviso", "Fecha_Extraccion",
+]
+
+# Forma con la que el motor consume los reemplazos de FORD, venga de donde venga.
+# La lista de precios y la consulta en vivo de WINGS tienen que devolver EXACTAMENTE
+# esto: `combinar_reemplazos_ford` las mezcla campo a campo y
+# `dimensiones.ampliar_mapeo_con_ford` consume el resultado sin saber de cual de las
+# dos salio cada dato. Si una de las dos se desalinea, la mezcla falla en silencio.
+ESQUEMA_REEMPLAZOS_FORD: dict[str, pl.DataType] = {
+    "clave_precio": pl.Utf8, "sku_ford": pl.Utf8, "clave_vigente": pl.Utf8,
+    "sku_vigente": pl.Utf8, "cadena": pl.Utf8, "reemplaza_a": pl.List(pl.Utf8),
+    "estado_reemplazo": pl.Utf8, "sucesor_confirmado": pl.Boolean,
+    "aviso": pl.Utf8, "extraido_en": pl.Utf8,
+}
+
+
+def leer_reemplazos_ford(ruta: str | Path) -> pl.DataFrame:
+    """Cadena de reemplazo que publica FORD, en claves comparables con Curifor.
+
+    Devuelve una fila por codigo de la lista con:
+      clave_precio, sku_ford, clave_vigente, sku_vigente, cadena, reemplaza_a
+      (lista de claves), estado_reemplazo, sucesor_confirmado, aviso.
+
+    Dos direcciones, porque la lista trae las dos y no se solapan:
+      - `Reemplazado_Por`: a ESTA pieza la reemplaza otra (1.070 codigos).
+      - `Reemplaza_A`: esta pieza reemplazo a otras (11.025 codigos), que es de
+        donde sale casi todo lo que Curifor efectivamente tiene.
+
+    `sucesor_confirmado` es False cuando FORD dice "Sin candidato vigente" (999 de
+    los 1.070). Gobierna DOS cosas y por eso no se llama "precio_...": el precio
+    del sucesor no viene, y ademas el codigo del sucesor no esta verificado -- no
+    se sabe si FORD realmente no lo tiene o si el codigo consultado se armo mal.
+    Sin esa confirmacion no se puede agrupar: juntar el stock de dos piezas que no
+    son la misma es peor que no juntarlo, porque deja de pedirse algo que si hace
+    falta. `Estado_Reemplazo` aplica solo a `Reemplazado_Por`; `Reemplaza_A` viene
+    de la cadena del portal y no depende de esa consulta.
+
+    Si la hoja no trae las columnas, devuelve un frame vacio con el mismo esquema.
+    """
+    df = pl.read_excel(ruta, sheet_name="Precios")
+    if not any(c in df.columns for c in COLUMNAS_REEMPLAZO_FORD):
+        return pl.DataFrame(schema=ESQUEMA_REEMPLAZOS_FORD)
+
+    def _txt(col: str) -> pl.Expr:
+        if col not in df.columns:
+            return pl.lit(None, dtype=pl.Utf8).alias(col)
+        return pl.col(col).cast(pl.Utf8, strict=False).str.strip_chars().replace("", None)
+
+    out = df.select(
+        pl.col("PartNumber").cast(pl.Utf8).alias("sku_ford"),
+        *[_txt(c) for c in COLUMNAS_REEMPLAZO_FORD],
+    ).with_columns(
+        pl.col("sku_ford").map_elements(clave_precio, return_dtype=pl.Utf8).alias("clave_precio"),
+        pl.col("Reemplazado_Por").alias("sku_vigente"),
+        pl.col("Reemplazado_Por")
+        .map_elements(clave_precio, return_dtype=pl.Utf8)
+        .alias("clave_vigente"),
+        pl.col("Cadena_Reemplazo").alias("cadena"),
+        pl.col("Estado_Reemplazo").alias("estado_reemplazo"),
+        pl.col("Reemplazo_Aviso").alias("aviso"),
+        # Cuando se consulto el portal por ESTA fila. Va por fila y no como un
+        # valor global porque el motor combina dos archivos -la lista de FORD y
+        # la de los codigos de Curifor- y cada uno se extrae por su lado: una
+        # fila puede ser de hoy y la de al lado de hace tres semanas.
+        pl.col("Fecha_Extraccion").alias("extraido_en"),
+        # Solo "Encontrado" deja el sucesor confirmado (codigo y precio).
+        (pl.col("Estado_Reemplazo") == "Encontrado").alias("sucesor_confirmado"),
+        # "A; B; C" -> claves normalizadas, sin vacios.
+        pl.col("Reemplaza_A")
+        .str.split(";")
+        .list.eval(
+            pl.element().str.strip_chars().map_elements(clave_precio, return_dtype=pl.Utf8)
+        )
+        .list.drop_nulls()
+        .alias("reemplaza_a"),
+    )
+    # Una fila por clave, siempre: el mismo numero de parte viene partido de dos
+    # formas y las dos dan la misma clave. Se colapsa aca -y no solo al combinar-
+    # para que la invariante valga tambien cuando hay una sola fuente.
+    return _colapsar_por_clave(
+        out.select(list(ESQUEMA_REEMPLAZOS_FORD)).filter(
+            pl.col("clave_precio").is_not_null()
+        )
+    )
+
+
+def _colapsar_por_clave(df: pl.DataFrame) -> pl.DataFrame:
+    """Una fila por `clave_precio`, la mas informativa.
+
+    El mismo repuesto puede venir dos veces partido distinto -`8A61/A03195AE5/YY/`
+    y `8A61/A03195/AE/5YY` son el mismo numero de parte con el slash en otro lado-
+    y las dos formas dan la misma `clave_precio`. Al 22-08-2026: 6 casos en la
+    lista de FORD y 60 en la corrida de WINGS, donde el traductor consulta las dos
+    particiones cuando no esta seguro.
+
+    Sin colapsar pasan dos cosas, las dos malas:
+
+      - `combinar_reemplazos_ford` hace un `left join` por esta clave, y una clave
+        repetida del lado derecho MULTIPLICA la fila del izquierdo;
+      - la plataforma no tiene clave unica por producto, asi que dos filas del
+        mismo codigo la dejan quedandose con cualquiera. En `AB3917D698AC3ZH` una
+        de las dos trae el vigente y la otra no: el aviso al comprador aparecia o
+        no segun el orden de insercion.
+
+    Gana la fila que resolvio sucesor; despues la que nombra mas predecesores;
+    despues la mas reciente. El ultimo criterio es el `sku_ford` para que dos
+    corridas iguales elijan igual.
+    """
+    if df.height == df["clave_precio"].n_unique():
+        return df
+    return (
+        df.sort(
+            by=[
+                pl.col("sku_vigente").is_not_null(),
+                pl.col("reemplaza_a").list.len().fill_null(0),
+                pl.col("extraido_en"),
+                pl.col("sku_ford"),
+            ],
+            descending=[True, True, True, False],
+            nulls_last=True,
+        )
+        .unique(subset="clave_precio", keep="first", maintain_order=True)
+    )
+
+
+def combinar_reemplazos_ford(lista: pl.DataFrame, wings: pl.DataFrame) -> pl.DataFrame:
+    """Mezcla la lista de precios estatica con lo que WINGS consulto en vivo.
+
+    Cada fuente manda en una direccion distinta y por eso no se pisa la fila entera:
+
+    - **WINGS manda hacia adelante** (`clave_vigente`: a este codigo lo reemplaza X).
+      Consulta el portal en el momento, asi que resuelve los descontinuados que la
+      foto no tiene. Si WINGS dice que un codigo NO tiene reemplazo, eso tambien
+      manda: borra el sucesor que la lista de precios declaraba.
+    - **La lista de precios manda en la inversa** (`reemplaza_a`: este codigo
+      reemplazo a A, B, C), que WINGS no publica y de donde sale casi todo lo que
+      Curifor efectivamente agrupa.
+
+    Pisar la fila completa se veria mas simple y estaria mal: de los 33 codigos de
+    la pauta InStock, 11 traen `reemplaza_a` en la lista de precios (medido el
+    22-08-2026). Reemplazarlos enteros perderia esos 11 grupos sin que nada avisara.
+    """
+    # Antes de cruzar nada: las dos fuentes traen el mismo repuesto repetido con
+    # otra particion, y una clave repetida rompe el join de abajo. Ver
+    # `_colapsar_por_clave`.
+    lista = _colapsar_por_clave(lista)
+    wings = _colapsar_por_clave(wings)
+
+    if wings.is_empty():
+        return lista
+    cols = list(ESQUEMA_REEMPLAZOS_FORD)
+    if lista.is_empty():
+        return wings.select(cols)
+
+    # Las filas que WINGS no toca quedan intactas.
+    solo_lista = lista.join(wings.select("clave_precio"), on="clave_precio", how="anti")
+    # Las que si toca: todo de WINGS, menos `reemplaza_a`, que se trae de la lista.
+    # `coalesce` sirve porque una lista vacia no es null: para un codigo que WINGS
+    # conoce y la lista no, gana el [] de WINGS, que es lo correcto.
+    de_wings = (
+        wings.join(
+            lista.select(["clave_precio", pl.col("reemplaza_a").alias("_ra_lista")]),
+            on="clave_precio",
+            how="left",
+        )
+        .with_columns(pl.coalesce("_ra_lista", "reemplaza_a").alias("reemplaza_a"))
+        .select(cols)
+    )
+    return pl.concat([solo_lista.select(cols), de_wings])
 
 
 def leer_precios_gildemeister(ruta: str | Path) -> pl.DataFrame:
