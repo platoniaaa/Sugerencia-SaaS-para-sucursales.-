@@ -85,3 +85,59 @@ def test_frontera_atrasada_no_tapa_un_atraso_que_si_importa(crudos):
 def test_con_todo_al_dia_no_frena_nada(crudos):
     assert motor.frescura_que_frena() == []
     assert motor.revisar_frescura() == []
+
+
+# --- Dias habiles, no corridos --------------------------------------------------
+#
+# Los archivos se exportan en dias de trabajo. Contando dias corridos, uno del
+# viernes tiene 3 dias el lunes, y cualquier limite de 2 lo da por vencido: la
+# carga se frenaba TODOS los lunes por un archivo que era del ultimo dia habil.
+# Paso el 07-09-2026 con `stock_frontera.xlsx`.
+
+
+@pytest.mark.parametrize("desde,hasta,esperado", [
+    # viernes -> lunes: el sabado y el domingo no cuentan
+    (date(2026, 9, 4), date(2026, 9, 7), 1),
+    # lunes -> martes
+    (date(2026, 9, 7), date(2026, 9, 8), 1),
+    # miercoles -> lunes siguiente: jue, vie, lun
+    (date(2026, 9, 2), date(2026, 9, 7), 3),
+    # viernes -> viernes siguiente
+    (date(2026, 9, 4), date(2026, 9, 11), 5),
+    # el mismo dia
+    (date(2026, 9, 7), date(2026, 9, 7), 0),
+    # sabado -> lunes
+    (date(2026, 9, 5), date(2026, 9, 7), 1),
+])
+def test_los_fines_de_semana_no_cuentan(desde, hasta, esperado):
+    assert motor.dias_habiles(desde, hasta) == esperado
+
+
+def test_un_archivo_del_viernes_no_vence_el_lunes(crudos, monkeypatch):
+    """El caso exacto que freno la carga del 07-09-2026.
+
+    `stock_bodegas_frontera` admite 2 dias. El archivo era del viernes: 3 dias
+    corridos, 1 habil. Con dias corridos la carga se frenaba todos los lunes.
+    """
+    import os
+
+    viernes = date(2026, 9, 4)
+    t = (viernes.toordinal() - date(1970, 1, 1).toordinal()) * 86400
+    os.utime(crudos["stock_bodegas_frontera"], (t, t))
+
+    lunes = date(2026, 9, 7)
+    assert motor.frescura_que_frena(lunes) == []
+
+
+def test_pero_un_archivo_de_hace_una_semana_si_vence(crudos):
+    """Relajar el conteo no puede volver inutil la guarda."""
+    import os
+
+    hace_una_semana = date(2026, 8, 31)
+    t = (hace_una_semana.toordinal() - date(1970, 1, 1).toordinal()) * 86400
+    os.utime(crudos["stock_bodegas"], (t, t))
+
+    frena = motor.frescura_que_frena(date(2026, 9, 7))
+
+    assert len(frena) == 1
+    assert "stock_bodegas" in frena[0]

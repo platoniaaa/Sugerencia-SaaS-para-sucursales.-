@@ -26,7 +26,7 @@ import os
 import sys
 import time
 import datetime as dt
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 
 # El proxy corporativo intercepta el HTTPS con su propio certificado. truststore
@@ -1377,6 +1377,28 @@ FRESCURA_DIAS = {
 FRESCURA_SOLO_AVISA = {"ventas_frontera"}
 
 
+def dias_habiles(desde: date, hasta: date) -> int:
+    """Dias entre dos fechas SIN contar sabados ni domingos.
+
+    La frescura se mide en dias habiles y no corridos porque los archivos se
+    exportan en dias de trabajo. Contando corridos, un archivo del viernes tiene 3
+    dias el lunes y cualquier limite de 2 lo da por vencido: la carga se frenaba
+    TODOS los lunes por un archivo que en realidad era del ultimo dia habil.
+
+    Paso el 07-09-2026 con `stock_frontera.xlsx` (viernes 04-09), justo despues de
+    que el equipo empezara a confiar en que la corrida automatica andaba.
+    """
+    if hasta <= desde:
+        return 0
+    dias = 0
+    actual = desde
+    while actual < hasta:
+        actual += timedelta(days=1)
+        if actual.weekday() < 5:  # 5 = sabado, 6 = domingo
+            dias += 1
+    return dias
+
+
 def revisar_frescura(hoy: date | None = None) -> list[str]:
     """Archivos que llevan demasiado sin actualizarse.
 
@@ -1392,9 +1414,9 @@ def revisar_frescura(hoy: date | None = None) -> list[str]:
             ruta = fuentes.ruta_de(fuente)
         except FileNotFoundError:
             continue
-        edad = (hoy - date.fromtimestamp(ruta.stat().st_mtime)).days
+        edad = dias_habiles(date.fromtimestamp(ruta.stat().st_mtime), hoy)
         if edad > dias:
-            aviso = f"{ruta.name}: {edad} dias (se espera al dia cada {dias})"
+            aviso = f"{ruta.name}: {edad} dias habiles (se espera al dia cada {dias})"
             if fuente in FRESCURA_SOLO_AVISA:
                 aviso += " - no frena la carga"
             viejos.append(aviso)
