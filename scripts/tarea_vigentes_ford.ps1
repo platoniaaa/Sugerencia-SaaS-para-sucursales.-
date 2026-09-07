@@ -1,4 +1,4 @@
-# ============================================================
+﻿# ============================================================
 #  tarea_vigentes_ford.ps1 - Corrida SEMANAL de vigentes de FORD
 #
 #  Consulta en el portal de FORD los codigos que Curifor tiene (stock + pautas),
@@ -155,7 +155,26 @@ Get-ChildItem $crudos -Filter "Vigentes ford curifor_*_resultado.xlsx" |
     Remove-Item -Force -ErrorAction SilentlyContinue
 
 if ($codigoCorrida -eq 0) {
-    Log "El motor lo toma en su proxima corrida (manana 10:00)."
+    # Se encadena el motor en vez de esperar a su corrida propia. Antes el archivo
+    # fresco de FORD quedaba en crudos y la plataforma recien lo mostraba al dia
+    # siguiente: los reemplazos y precios llegaban un dia tarde, todas las semanas.
+    #
+    # No se depende de que la extraccion termine antes de las 9:30 (tarda ~25 min y
+    # el margen seria de 5): el motor se llama aca, cuando el dato ya esta.
+    Log "Lanzando el motor para publicar los datos nuevos..."
+    Push-Location "$root\apps\api"
+    & "$root\apps\api\.venv\Scripts\python.exe" -u -m src.jobs.correr_motor_real --oficial 2>&1 |
+        ForEach-Object { "$_" } | Out-File $log -Append -Encoding utf8
+    $codigoMotor = $LASTEXITCODE
+    if ($codigoMotor -eq 0) {
+        Log "Motor OK: la plataforma ya tiene los reemplazos y precios nuevos."
+    } else {
+        # No se cambia $codigoCorrida: la extraccion SI funciono y el archivo quedo
+        # en crudos. El motor vuelve a intentar solo en su corrida de las 9:30.
+        Log "El motor fallo (codigo $codigoMotor). El archivo quedo en crudos y la"
+        Log "corrida de las 9:30 lo va a publicar igual."
+    }
+    Pop-Location
     "RESULTADO: OK" | Out-File $log -Append -Encoding utf8
 } else {
     "RESULTADO: FALLO (codigo $codigoCorrida)" | Out-File $log -Append -Encoding utf8
