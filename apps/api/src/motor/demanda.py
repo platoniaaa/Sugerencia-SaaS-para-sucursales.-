@@ -71,7 +71,11 @@ def calcular_demanda(
     meses12 = _meses_ventana(_inicio_ventana(fin_mes_cerrado, P.VENTANA_M12), 12)
 
     # --- DemLocal: por clase LOCAL, ventana 6m (A/B) o 12m (C/D) ---
-    grupos = abc.select([*local, "clasificacion_abc", "clasificacion_abc_agregada"])
+    grupos = abc.select([*local, "clasificacion_abc", "clasificacion_abc_agregada",
+                         "clasificacion_abc_agregada_d"])
+    # OJO: este C/D es la VENTANA de demanda (A/B miran 6 meses, C/D miran 12), no
+    # tiene nada que ver con la centralizacion en el CD de mas abajo. Son dos reglas
+    # distintas que usan las mismas letras.
     g_ab = grupos.filter(pl.col("clasificacion_abc").is_in(["A", "B"])).select(local)
     g_cd = grupos.filter(pl.col("clasificacion_abc").is_in(["C", "D"])).select(local)
 
@@ -81,15 +85,28 @@ def calcular_demanda(
 
     base = grupos.join(dem_local, on=local, how="left")
 
-    # --- CD con clase agregada A/B: serie 12m consolidada + winsorizada ---
+    # --- CD: serie 12m consolidada + winsorizada ---
+    #
+    # El CD no tiene demanda propia: se le asigna la SUMA de la venta de las
+    # sucursales que abastece, porque compra por ellas para despues repartirles.
+    # De ahi que sus ordenes sean grandes aunque en el CD casi no se venda.
+    #
+    # La condicion tiene que ser LA MISMA que usan `lead_time` (para decidir
+    # `abastece_cd`) y `clasificacion_abc` (para crear las filas del CD). Cuando se
+    # cambio la regla en esos dos y aca no, el CD quedo sumando la venta de
+    # sucursales que ya no atendia: 95 de 265 productos consolidaban mas sucursales
+    # de las que abastecian ($12,2M), y algunos compraban sin tener a quien mandarle.
+    col_agregada = ("clasificacion_abc_agregada_d" if P.CENTRALIZACION_AGREGADA_SOLO_D
+                    else "clasificacion_abc_agregada")
     cd_ab = grupos.filter(
-        (pl.col("sucursal_final") == P.CD_ID) & pl.col("clasificacion_abc_agregada").is_in(["A", "B"])
+        (pl.col("sucursal_final") == P.CD_ID) & pl.col(col_agregada).is_in(["A", "B"])
     ).select("producto_master").unique()
 
     if cd_ab.height:
-        # sucursales que el CD consolida: clase local C/D (por producto).
+        # Las sucursales cuya venta se suma: las mismas que el CD abastece.
         sucsD = grupos.filter(
-            (pl.col("sucursal_final") != P.CD_ID) & pl.col("clasificacion_abc").is_in(["C", "D"])
+            (pl.col("sucursal_final") != P.CD_ID)
+            & pl.col("clasificacion_abc").is_in(list(P.CENTRALIZACION_CLASES_LOCALES))
         ).select(["producto_master", "sucursal_final"])
         consolidar = pl.concat([
             cd_ab.with_columns(pl.lit(P.CD_ID).alias("sucursal_final")),
@@ -117,3 +134,67 @@ def calcular_demanda(
     return base.with_columns(
         (pl.col("demanda_mensual") / P.DIAS_HABILES_MES).alias("demanda_diaria")
     )
+
+
+def calcular_serie_mensual(
+    ventas: pl.DataFrame,
+    mapeo: pl.DataFrame,
+    dim_producto: pl.DataFrame,
+    fin_mes_cerrado: date,
+) -> pl.DataFrame:
+    """Venta mes a mes de los últimos 12 meses y sus promedios a 3, 6 y 12.
+
+    Es la MISMA serie con la que se calcula la demanda -mismo grano
+    (producto_master + sucursal_final), misma CantidadAjustada, misma ventana- pero
+    SIN winsorizar: el comprador tiene que poder sumar las doce columnas, dividir
+    por doce, y que le dé el promedio que está al lado. `demanda_mensual` recorta
+    los peaks a propósito; si fuera esa la que se muestra, la resta no cuadraría y
+    no habría forma de comprobar el número.
+
+    Las columnas se numeran por POSICIÓN y no por mes: `venta_mes_01` es siempre el
+    último mes cerrado y `venta_mes_12` el más antiguo de la ventana. Nombrarlas por
+    mes obligaría a agregar y borrar columnas de la tabla en cada corrida; la
+    etiqueta ("jun-25") la arma la plataforma con el periodo que devuelve
+    `ultimo_mes_cerrado`, y que el motor publica en la misma corrida.
+
+    Ojo con el CD: acá va lo que el CD vendió, que es casi nada. Su
+    `demanda_mensual` es otra cosa -la consolidación de las sucursales clase C/D que
+    abastece- y por eso no cuadra con estas columnas. Repetir acá la serie
+    consolidada haría que sumar las sucursales diera el doble de la venta del país.
+    """
+    v = preparar_ventas(ventas, mapeo, dim_producto).with_columns(
+        pl.col("Fecha").dt.strftime("%Y%m").alias("mes")
+    )
+    local = ["producto_master", "sucursal_final"]
+    totales = v.group_by([*local, "mes"]).agg(pl.col("CantidadAjustada").sum().alias("total"))
+
+    # `_meses_ventana` devuelve del más antiguo al más reciente; las columnas van
+    # al revés (01 = el último mes cerrado), así que el índice se da vuelta.
+    meses = _meses_ventana(_inicio_ventana(fin_mes_cerrado, P.VENTANA_M12), P.VENTANA_M12)
+    n = len(meses)
+    serie = _serie_completa(totales, totales.select(local).unique(), meses, local)
+
+    ancho = serie.group_by(local).agg([
+        pl.col("total").filter(pl.col("mes") == m).sum().alias(f"venta_mes_{n - i:02d}")
+        for i, m in enumerate(meses)
+    ])
+    return ancho.with_columns(
+        pl.mean_horizontal(
+            [pl.col(f"venta_mes_{i:02d}") for i in range(1, P.VENTANA_M3 + 1)]
+        ).alias("prom_vta_3m"),
+        pl.mean_horizontal(
+            [pl.col(f"venta_mes_{i:02d}") for i in range(1, P.VENTANA_M6 + 1)]
+        ).alias("prom_vta_6m"),
+        pl.mean_horizontal(
+            [pl.col(f"venta_mes_{i:02d}") for i in range(1, P.VENTANA_M12 + 1)]
+        ).alias("prom_vta_12m"),
+    )
+
+
+def ultimo_mes_cerrado(fin_mes_cerrado: date) -> str:
+    """El "YYYYMM" al que corresponde `venta_mes_01`.
+
+    Vive acá y no en el pipeline para que la etiqueta y el dato no puedan salir de
+    corridas distintas: es la misma cuenta que define la ventana de la serie.
+    """
+    return _meses_ventana(_inicio_ventana(fin_mes_cerrado, P.VENTANA_M12), P.VENTANA_M12)[-1]

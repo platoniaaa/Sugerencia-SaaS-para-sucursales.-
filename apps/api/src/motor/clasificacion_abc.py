@@ -38,13 +38,18 @@ def preparar_ventas(
         pl.coalesce(pl.col("Producto_Master"), pl.col("Producto")).alias("producto_master")
     )
 
-    # SUCURSAL_FINAL: 1) LINDEROS+VTA MOVIL, 2) RANCAGUA 2, 3) especiales -> CD.
+    # SUCURSAL_FINAL: 1) LINDEROS+VTA MOVIL, 2) fusiones, 3) especiales -> CD.
+    # Las fusiones se leen de `P.FUSIONES_SUCURSAL` y no van escritas aca: tenerlas
+    # duplicadas fue lo que dejo a Rancagua 2 fusionada en las ventas despues de
+    # separarla en el mapeo de bodegas, con el stock en una sucursal y la demanda
+    # en otra (18-ago-2026).
     s0 = (
         pl.when((pl.col("SUCURSAL") == P.SUCURSAL_LINDEROS) & (pl.col("TipoVenta") == P.TIPO_VENTA_MOVIL))
         .then(pl.lit(P.SUCURSAL_LINDEROS_MOVIL))
-        .when(pl.col("SUCURSAL") == "RANCAGUA 2")
-        .then(pl.lit("RANCAGUA"))
-        .otherwise(pl.col("SUCURSAL"))
+        .otherwise(
+            pl.col("SUCURSAL").replace(P.FUSIONES_SUCURSAL) if P.FUSIONES_SUCURSAL
+            else pl.col("SUCURSAL")
+        )
     )
     v = v.with_columns(s0.alias("_s0")).with_columns(
         pl.when(pl.col("_s0").is_in(list(P.ESPECIALES_CD)))
@@ -143,18 +148,51 @@ def calcular_abc(
         switch_expr("m3a", "m6a", "m12a").alias("clasificacion_abc_agregada"),
     )
 
-    # Filas sintéticas del CD (routing de centralización): productos con cola
-    # C/D local y agregada A/B que no tienen fila propia en el CD. Nacen con
-    # m3/m6/m12 = 0 y clase local "D" (igual que FilasCDExtra en el DAX).
+    # Clase agregada contando SOLO las sucursales donde el producto es D.
+    #
+    # La agregada normal suma todas las sucursales, asi que un repuesto que se
+    # mueve bien en una sola sucursal sale A a nivel nacional. Con la regla vieja
+    # ("C/D local + A/B agregada -> lo abastece el CD") esa unica sucursal buena
+    # arrastraba a todas las demas a centralizacion, aunque entre ellas apenas se
+    # vendiera. Lo que decide si vale la pena centralizar es cuanto suman LAS QUE
+    # LO PIDEN POCO, no la que ya lo vende sola (Abastecimiento, 18-ago-2026).
+    pares_d = base.filter(pl.col("clasificacion_abc") == "D").select(local)
+    vpos_d = vpos.join(pares_d, on=local, how="semi")
+    agg_d = (
+        combos.select(agg).unique()
+        .join(_contar_meses(vpos_d, ini3, agg, "m3d"), on=agg, how="left")
+        .join(_contar_meses(vpos_d, ini6, agg, "m6d"), on=agg, how="left")
+        .join(_contar_meses(vpos_d, ini12, agg, "m12d"), on=agg, how="left")
+        .fill_null(0)
+    )
+    base = base.join(agg_d, on=agg, how="left").with_columns(
+        pl.col("m3d").fill_null(0), pl.col("m6d").fill_null(0), pl.col("m12d").fill_null(0),
+    )
+    base = base.with_columns(
+        switch_expr("m3d", "m6d", "m12d").alias("clasificacion_abc_agregada_d")
+    )
+
+    # Filas sintéticas del CD (routing de centralización): productos que se
+    # centralizan y no tienen fila propia en el CD. Nacen con m3/m6/m12 = 0 y clase
+    # local "D" (igual que FilasCDExtra en el DAX).
+    #
+    # La condicion tiene que ser LA MISMA que decide `abastece_cd` en `lead_time`:
+    # si aca se crean filas de CD para productos que alla no se centralizan, el CD
+    # queda con filas que nadie abastece. Desde ago-2026 es "D local + A/B en la
+    # agregada de las sucursales D" (antes: C/D local + A/B agregada normal).
     cola = base.filter(
-        pl.col("clasificacion_abc").is_in(["C", "D"])
-        & pl.col("clasificacion_abc_agregada").is_in(["A", "B"])
+        pl.col("clasificacion_abc").is_in(list(P.CENTRALIZACION_CLASES_LOCALES))
+        & pl.col(
+            "clasificacion_abc_agregada_d" if P.CENTRALIZACION_AGREGADA_SOLO_D
+            else "clasificacion_abc_agregada"
+        ).is_in(["A", "B"])
     ).select("producto_master").unique()
     existentes = base.filter(pl.col("sucursal_final") == P.CD_ID).select("producto_master").unique()
     extra = cola.join(existentes, on="producto_master", how="anti")
     if extra.height:
         info_agg = base.select(
-            ["producto_master", "m3a", "m6a", "m12a", "clasificacion_abc_agregada"]
+            ["producto_master", "m3a", "m6a", "m12a", "clasificacion_abc_agregada",
+             "m3d", "m6d", "m12d", "clasificacion_abc_agregada_d"]
         ).unique(subset=["producto_master"])
         filas = (
             extra.join(info_agg, on="producto_master", how="left")
