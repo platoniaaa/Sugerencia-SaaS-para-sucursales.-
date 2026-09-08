@@ -178,6 +178,11 @@ def _buscar(fuente: str, obligatorio: bool = True) -> Path | None:
         return None
 
 
+# Archivos de la carpeta de crudos que se descartaron por no tener la forma
+# esperada. Se informan como advertencia, no como fallo.
+_AVISOS_FUENTES: list[str] = []
+
+
 def _archivos_de_ventas(fin_mes_cerrado: date) -> list[Path]:
     """Respaldos de venta que cubren la ventana de 12 meses que usa el motor.
 
@@ -191,12 +196,25 @@ def _archivos_de_ventas(fin_mes_cerrado: date) -> list[Path]:
     # Los respaldos se identifican POR DESCARTE: se llaman "2025 (4).xlsx" y no hay
     # patron que los reconozca, pero si se sabe que no son stock, ni seguimiento, ni
     # el mix, ni las ventas de Frontera (que tienen otro esquema y otros filtros).
-    return sorted(
+    from ..motor import lectores_excel
+
+    candidatos = sorted(
         p for p in CRUDOS_DIR.rglob("*.xlsx")
         if not p.name.startswith("~$")
         and not _fuentes.es_de_alguna_fuente(p.name, excepto="ventas")
         and any(a in p.name for a in anios)
     )
+    # El descarte va ACA y no en el llamador: esta funcion la usan `construir_csv`
+    # y `publicar_ventas_historicas`, y filtrar en uno solo dejaba al otro roto.
+    # Paso el 08-09-2026: el sugerido publico bien y la carga de ventas se cayo
+    # con el mismo archivo.
+    ventas = [p for p in candidatos if lectores_excel.parece_respaldo_de_venta(p)]
+    for nombre in (p.name for p in candidatos if p not in ventas):
+        aviso = (f"'{nombre}' esta en la carpeta de crudos pero no tiene forma de "
+                 "respaldo de venta: se ignoro. Si SI lo es, cambio de formato.")
+        if aviso not in _AVISOS_FUENTES:
+            _AVISOS_FUENTES.append(aviso)
+    return ventas
 
 
 def construir_csv(hoy: date | None = None) -> Path:
@@ -210,10 +228,9 @@ def construir_csv(hoy: date | None = None) -> Path:
     if cfg:
         aplicar_config(cfg)
     ventas = _archivos_de_ventas(_fin_mes_cerrado(hoy))
-    # Se listan en el log a proposito: los respaldos se eligen POR DESCARTE, asi que
-    # un archivo nuevo cualquiera con el ano en el nombre entra aca sin avisar. Ver
-    # la lista es la unica forma barata de cachar que se colo algo que no es venta.
     print(f"  respaldos de venta: {[p.name for p in ventas] or '(ninguno)'}")
+    for aviso in _AVISOS_FUENTES:
+        print(f"  DESCARTADO: {aviso}")
     # Ventas Frontera (E07): opcional, pero sin ellas el motor pierde los combos
     # que solo se venden ahi y subestima la demanda de los que venden en las dos.
     frontera_xlsx = _buscar("ventas_frontera", obligatorio=False)

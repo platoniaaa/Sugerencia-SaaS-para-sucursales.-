@@ -74,6 +74,7 @@ def leer_reporte(
     *,
     hoja: str | None = None,
     obligatorias: Iterable[str] | None = None,
+    solo_encabezados: bool = False,
 ) -> pl.DataFrame:
     """Lee un reporte de Flexline y devuelve solo las columnas pedidas, renombradas.
 
@@ -117,6 +118,11 @@ def leer_reporte(
                 f"(se revisaron {MAX_FILAS_ESCANEO} filas). Faltan columnas como "
                 f"{sorted(columnas[d] for d in (obligatorias or columnas))}."
             )
+
+        # `solo_encabezados`: comprobar si un archivo tiene la forma esperada sin
+        # pagar la lectura completa. Un respaldo de ventas pesa 40 MB.
+        if solo_encabezados:
+            return pl.DataFrame(schema={destino: pl.Utf8 for destino in columnas})
 
         datos: dict[str, list] = {destino: [] for destino in columnas}
         ancho_max = max(indices.values()) if indices else 0
@@ -310,6 +316,29 @@ def _sucursal_sin_prefijo() -> pl.Expr:
     )
 
 
+OBLIGATORIAS_VENTAS = ["Producto", "Cantidad", "tipoDocto", "tipoproducto"]
+
+
+def parece_respaldo_de_venta(ruta: str | Path) -> bool:
+    """Si el archivo tiene la forma de un respaldo de ventas.
+
+    Los respaldos se eligen POR DESCARTE -no hay patron en el nombre- asi que
+    cualquier .xlsx nuevo con el ano adentro entra a la lista. El 08-09-2026
+    aparecio "Lubricantes Motorcraft - Ventas mensuales por canal 2025-2026.xlsx",
+    que es un reporte por canal y no una venta linea a linea, y tumbo la corrida
+    diaria entera.
+
+    Se prueba con el MISMO lector que se va a usar despues, no con una lista de
+    nombres aparte: si el lector cambia lo que exige, esta prueba lo sigue sola.
+    """
+    try:
+        leer_reporte(ruta, COLUMNAS_VENTAS, obligatorias=OBLIGATORIAS_VENTAS,
+                     solo_encabezados=True)
+        return True
+    except ValueError:
+        return False
+
+
 def leer_ventas_excel(rutas: str | Path | Iterable[str | Path]) -> pl.DataFrame:
     """Respaldos anuales de ventas -> crudo de `normalizar_ventas_curifor`.
 
@@ -324,7 +353,7 @@ def leer_ventas_excel(rutas: str | Path | Iterable[str | Path]) -> pl.DataFrame:
     frames = []
     for ruta in rutas:
         df = leer_reporte(
-            ruta, COLUMNAS_VENTAS, obligatorias=["Producto", "Cantidad", "tipoDocto", "tipoproducto"]
+            ruta, COLUMNAS_VENTAS, obligatorias=OBLIGATORIAS_VENTAS
         )
         frames.append(
             df.with_columns(
