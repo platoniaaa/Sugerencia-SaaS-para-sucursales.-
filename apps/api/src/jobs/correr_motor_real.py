@@ -54,6 +54,14 @@ SALIDA_STOCK = _API_DIR / "data" / "stock_unificado_motor.csv"
 SALIDA_TRANSITO = _API_DIR / "data" / "stock_transito_motor.csv"
 SALIDA_COSTOS = _API_DIR / "data" / "costos_precios_motor.csv"
 SALIDA_COMPRAS = _API_DIR / "data" / "compras_precios_motor.csv"
+# Candado: una sola corrida a la vez en este PC.
+#
+# El lunes 14-09-2026 corrieron tres motores en media hora: el que lanza la
+# tarea semanal de vigentes FORD al terminar (09:26), la tarea diaria (09:30) y
+# una manual (09:40). Dos motores a la vez no caben en memoria -Polars se cayo
+# con "memory allocation of 682183424 bytes failed"- y la corrida que muere a
+# mitad deja la plataforma con unas tablas nuevas y otras viejas.
+CANDADO = _API_DIR / "data" / "motor.lock"
 
 
 def _leer_env() -> dict[str, str]:
@@ -1450,7 +1458,72 @@ def frescura_que_frena(hoy: date | None = None) -> list[str]:
     return [v for v in revisar_frescura(hoy) if "no frena la carga" not in v]
 
 
+def _proceso_vivo(pid: int) -> bool:
+    """Si el PID sigue corriendo. En Windows `os.kill(pid, 0)` no sirve para
+    preguntar, asi que se consulta al sistema."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        SYNCHRONIZE = 0x00100000
+        h = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+        if not h:
+            return False
+        ctypes.windll.kernel32.CloseHandle(h)
+        return True
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def tomar_candado() -> str | None:
+    """Reclama el candado. Devuelve None si se pudo, o el motivo si ya hay una
+    corrida en curso.
+
+    Un candado cuyo proceso ya no existe -el PC se apago a mitad, el proceso
+    murio sin limpiar- se pisa: si no, una corrida caida dejaria al motor sin
+    poder arrancar nunca mas.
+    """
+    CANDADO.parent.mkdir(parents=True, exist_ok=True)
+    if CANDADO.exists():
+        try:
+            pid_txt, _, desde = CANDADO.read_text(encoding="utf-8").strip().partition(" ")
+            pid = int(pid_txt)
+        except (ValueError, OSError):
+            pid, desde = 0, "?"
+        if _proceso_vivo(pid):
+            return f"ya hay una corrida en curso (PID {pid}, desde {desde}); no se lanza otra."
+        print(f"  (candado viejo de un proceso que ya no existe: PID {pid}; se pisa)")
+    CANDADO.write_text(
+        f"{os.getpid()} {dt.datetime.now():%Y-%m-%d %H:%M:%S}", encoding="utf-8")
+    return None
+
+
+def soltar_candado() -> None:
+    try:
+        if CANDADO.exists() and CANDADO.read_text(encoding="utf-8").split(" ")[0] == str(os.getpid()):
+            CANDADO.unlink()
+    except OSError:
+        pass
+
+
 def run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
+    ocupado = tomar_candado()
+    if ocupado:
+        # No es un fallo del motor: la otra corrida va a publicar lo mismo. Se
+        # dice y se sale limpio, sin incidencia.
+        print(f"NO SE CORRE: {ocupado}")
+        return 0
+    try:
+        return _run(oficial=oficial, ignorar_frescura=ignorar_frescura)
+    finally:
+        soltar_candado()
+
+
+def _run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
     print(f"Crudos: {CRUDOS_DIR}")
 
     viejos = revisar_frescura()
