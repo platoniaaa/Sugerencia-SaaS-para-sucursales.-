@@ -748,3 +748,55 @@ def combinar_reemplazos_ford(lista: pl.DataFrame, wings: pl.DataFrame) -> pl.Dat
 
 def leer_precios_gildemeister(ruta: str | Path) -> pl.DataFrame:
     return _leer_precios(ruta, "Codigo", COLUMNAS_PRECIOS_GILDEMEISTER)
+
+
+# --- Export crudo del ERP para la lista de precios --------------------------------
+
+COLUMNAS_LISTA_ERP = {
+    "Producto": "producto",
+    "Descripción": "glosa",
+    "Stock": "stock",
+    "Costo": "costo",
+    "Precio Venta": "precio_erp",
+    "Tipo": "tipo_erp",
+    "Procedencia": "procedencia",
+}
+
+
+def leer_lista_erp(ruta) -> pl.DataFrame:
+    """El export del ERP (`lista_erp.xlsx`), una fila por producto.
+
+    El archivo trae 410 mil filas y repite el producto por lote/serie, asi que se
+    agrupa: stock sumado, costo y precio el mayor, el resto la primera fila. Se
+    lee con calamine (16 s) y no con openpyxl (minutos).
+
+    "Tipo" aparece dos veces en el encabezado (REPUESTOS/GASTO/MO_TERC y el tipo
+    de repuesto); se toma la primera, que es la que distingue un repuesto de un
+    servicio.
+    """
+    import polars as pl
+
+    df = pl.read_excel(ruta, sheet_id=1, engine="calamine")
+    # Con dos columnas "Tipo", polars nombra la segunda "Tipo_duplicated_0".
+    faltan = {c for c in COLUMNAS_LISTA_ERP if c not in df.columns}
+    if faltan:
+        raise ValueError(f"Al export del ERP le faltan columnas: {sorted(faltan)}")
+    df = df.select([pl.col(c).alias(n) for c, n in COLUMNAS_LISTA_ERP.items()])
+    return (
+        df.with_columns(pl.col("producto").cast(pl.Utf8).str.strip_chars())
+        .filter(pl.col("producto").is_not_null() & (pl.col("producto") != ""))
+        .with_columns(
+            pl.col("stock").cast(pl.Float64, strict=False),
+            pl.col("costo").cast(pl.Float64, strict=False),
+            pl.col("precio_erp").cast(pl.Float64, strict=False),
+        )
+        .group_by("producto", maintain_order=True)
+        .agg(
+            pl.col("glosa").cast(pl.Utf8).first(),
+            pl.col("stock").sum(),
+            pl.col("costo").max(),
+            pl.col("precio_erp").max(),
+            pl.col("tipo_erp").cast(pl.Utf8).first(),
+            pl.col("procedencia").cast(pl.Utf8).first(),
+        )
+    )

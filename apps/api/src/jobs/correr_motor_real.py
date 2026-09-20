@@ -54,6 +54,9 @@ SALIDA_STOCK = _API_DIR / "data" / "stock_unificado_motor.csv"
 SALIDA_TRANSITO = _API_DIR / "data" / "stock_transito_motor.csv"
 SALIDA_COSTOS = _API_DIR / "data" / "costos_precios_motor.csv"
 SALIDA_COMPRAS = _API_DIR / "data" / "compras_precios_motor.csv"
+# Cuando se publico por ultima vez el export del ERP (mtime del archivo). Son
+# 410 mil filas en 80 lotes: se manda solo cuando el archivo cambio.
+MARCA_LISTA_ERP = _API_DIR / "data" / "lista_erp_publicada.txt"
 # Candado: una sola corrida a la vez en este PC.
 #
 # El lunes 14-09-2026 corrieron tres motores en media hora: el que lanza la
@@ -1028,6 +1031,48 @@ def publicar_compras_precios() -> dict | None:
     return _publicar_json("las compras de precios", "/api/admin/precios/compras", filas)
 
 
+def publicar_lista_erp() -> dict | None:
+    """Sube el export del ERP a la lista de precios, SOLO si el archivo cambio.
+
+    Alimenta dos cosas: los repuestos nuevos con stock (que si no, no existen
+    para la plataforma hasta que alguien los cree a mano) y el precio ERP de
+    todos los que ya estan (que estaba congelado en la carga del 04-09-2026).
+
+    Devuelve None si no hay archivo o ya se publico este mismo; un dict con los
+    totales si se publico. Va antes del recalculo, para que lo nuevo nazca con
+    precio en la misma corrida.
+    """
+    from ..motor import fuentes as _fuentes
+    from ..motor import lectores_excel as _lx
+
+    try:
+        ruta = _fuentes.ruta_de("lista_erp")
+    except Exception:  # noqa: BLE001 - sin archivo no hay feed, y no es un fallo
+        return None
+    huella = f"{ruta.name}|{int(ruta.stat().st_mtime)}|{ruta.stat().st_size}"
+    if MARCA_LISTA_ERP.exists() and MARCA_LISTA_ERP.read_text(encoding="utf-8").strip() == huella:
+        return None
+
+    df = _lx.leer_lista_erp(ruta)
+    filas = df.to_dicts()
+    total = {"recibidos": 0, "actualizados": 0, "creados": 0, "no_entran": {}, "lotes": 0}
+    LOTE = 5000
+    for i in range(0, len(filas), LOTE):
+        r = _publicar_json("la lista del ERP", "/api/admin/precios/erp", filas[i:i + LOTE])
+        if r is None:
+            # Un lote caido deja la marca sin escribir: manana se reintenta entero.
+            return None
+        total["lotes"] += 1
+        for k in ("recibidos", "actualizados", "creados"):
+            total[k] += int(r.get(k) or 0)
+        for k, v in (r.get("no_entran") or {}).items():
+            total["no_entran"][k] = total["no_entran"].get(k, 0) + int(v)
+    MARCA_LISTA_ERP.parent.mkdir(parents=True, exist_ok=True)
+    MARCA_LISTA_ERP.write_text(huella, encoding="utf-8")
+    total["archivo"] = ruta.name
+    return total
+
+
 def recalcular_precios() -> dict | None:
     """Recalcula la lista de precios con el costo, stock y compras recien subidos.
 
@@ -1384,6 +1429,10 @@ FRESCURA_DIAS = {
     "seguimiento_frontera": 7,
     "ventas_frontera": 35,
     "catalogo": 120,
+    # Export manual del ERP para la lista de precios: se pide semanal. Pasado
+    # de esto los precios nuevos del ERP no se ven y los repuestos nuevos no
+    # entran a la lista. Solo avisa: el sugerido no depende de el.
+    "lista_erp": 10,
     "mix_reemplazos": 120,
 }
 
@@ -1399,7 +1448,7 @@ FRESCURA_DIAS = {
 # apagaba la guarda para TODOS los demas archivos, incluido el stock, que si
 # importa. Una guarda que obliga a saltearse todas las guardas es peor que no
 # tenerla.
-FRESCURA_SOLO_AVISA = {"ventas_frontera"}
+FRESCURA_SOLO_AVISA = {"ventas_frontera", "lista_erp"}
 
 
 def dias_habiles(desde: date, hasta: date) -> int:
@@ -1615,6 +1664,12 @@ def _run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
         com = publicar_con_reintentos("las compras de precios", publicar_compras_precios)
         if com:
             print(f"  compras de precios publicadas: {com.get('actualizados')} productos.")
+        erp = publicar_con_reintentos("la lista del ERP", publicar_lista_erp)
+        if erp:
+            fuera = ", ".join(f"{k} {v:,}" for k, v in sorted(erp["no_entran"].items()))
+            print(f"  lista del ERP publicada ({erp['archivo']}): {erp['creados']} productos nuevos "
+                  f"con stock, precio ERP actualizado en {erp['actualizados']:,}. "
+                  f"Quedan fuera: {fuera}.")
         pre = publicar_con_reintentos("el recalculo de precios", recalcular_precios)
         if pre:
             print(f"  precios recalculados: {pre.get('productos')} productos, "

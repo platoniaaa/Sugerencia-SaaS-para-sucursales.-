@@ -99,6 +99,17 @@ FUENTES: dict[str, FuenteSpec] = {
         excluye=["*stock*", "*venta*", "*seguimiento*"],
         hoja="Lista sin duplicados",
     ),
+    # El export crudo del ERP (una hoja: Producto, Descripcion, Stock, Costo,
+    # Precio Venta, Tipo...). Abastecimiento lo exporta a mano, semanal, y lo deja
+    # como `lista_erp.xlsx`. Alimenta la LISTA DE PRECIOS de la plataforma: crea
+    # los repuestos nuevos con stock y refresca el precio ERP. No toca el sugerido.
+    # El nombre es exacto a proposito, igual que el del maestro: "*lista*" solo
+    # matchearia las listas de proveedor y el propio libro LISTA DE PRECIOS.xlsx.
+    "lista_erp": FuenteSpec(
+        ["lista_erp.*", "lista erp.*", "listaerp.*"],
+        excluye=["*proveedor*", "*ford*", "*gildemeister*"],
+        hoja=0,
+    ),
     # Listas de precios de proveedor. NO alimentan el sugerido: dan el precio de
     # venta para calcular el margen y priorizar que comprar.
     # Tienen que estar declaradas aunque nada las lea todavia: `es_de_alguna_fuente`
