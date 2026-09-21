@@ -64,9 +64,18 @@ def test_un_error_del_dato_no_es_transitorio(e):
     assert motor._es_transitorio(e) is False
 
 
-def test_un_401_no_se_reintenta():
-    """Credenciales malas no se arreglan esperando."""
-    assert motor._es_transitorio(_http(401)) is False
+def test_un_401_se_reintenta_una_vez_con_sesion_nueva():
+    """Desde el 21-09-2026 el token se pide una vez por corrida y se reutiliza.
+    Un 401 a mitad de corrida es, casi siempre, una sesion invalidada por un
+    deploy (la clave de sesion cambia con cada proceso), y se arregla entrando
+    de nuevo. Credenciales malas tambien dan 401 y ahi el reintento sobra, pero
+    son 3 intentos como mucho: cuesta un minuto, no una corrida."""
+    assert motor._es_transitorio(_http(401)) is True
+
+
+def test_un_403_no_se_reintenta():
+    """Sin permiso no se arregla esperando ni volviendo a entrar."""
+    assert motor._es_transitorio(_http(403)) is False
 
 
 # --- El reintento ---------------------------------------------------------------
@@ -181,12 +190,12 @@ def test_la_carga_principal_reintenta_el_502(monkeypatch, tmp_path):
 
 
 def test_la_carga_principal_no_reintenta_lo_que_no_es_transitorio(monkeypatch, tmp_path):
-    """Un 401 o un CSV mal formado no se arreglan esperando."""
+    """Un 403 o un CSV mal formado no se arreglan esperando."""
     intentos = {"n": 0}
 
     def falso(csv_path, oficial=False):
         intentos["n"] += 1
-        raise _respuesta(401)
+        raise _respuesta(403)
 
     monkeypatch.setattr(motor, "_enviar_una_vez", falso)
     monkeypatch.setattr(motor.time, "sleep", lambda s: None)

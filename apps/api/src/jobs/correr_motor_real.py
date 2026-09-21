@@ -91,6 +91,30 @@ def _credenciales() -> tuple[str, str | None, str | None]:
     )
 
 
+# El token de la corrida. Cada paso de publicacion hacia su propio login -14 por
+# corrida, mas uno por cada lote del feed del ERP-, y el 21-09-2026 Render
+# devolvio 429 (Too Many Requests) al login despues de un 502: desde ahi
+# fallaron InStock, compras y el recalculo, y ni la incidencia se pudo dejar.
+# Ahora se entra una vez y se reutiliza; si la plataforma responde 401 (por
+# ejemplo, un deploy a mitad de corrida invalido las sesiones) se vuelve a
+# entrar una sola vez.
+_TOKEN: dict[str, str | None] = {"valor": None}
+
+
+def _token(c, base: str, email: str, password: str, *, renovar: bool = False) -> str:
+    if renovar or not _TOKEN["valor"]:
+        r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
+        r.raise_for_status()
+        _TOKEN["valor"] = r.json()["token"]
+    return _TOKEN["valor"]
+
+
+def olvidar_token() -> None:
+    """Para los tests y para `publicar_con_reintentos`, que renueva la sesion
+    antes de reintentar un paso caido."""
+    _TOKEN["valor"] = None
+
+
 def obtener_config() -> dict | None:
     """Pide a la plataforma la configuracion calibrable del modelo.
 
@@ -105,9 +129,7 @@ def obtener_config() -> dict | None:
         return None
     try:
         with httpx.Client(timeout=60) as c:
-            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
-            r.raise_for_status()
-            token = r.json()["token"]
+            token = _token(c, base, email, password)
             r = c.get(f"{base}/api/admin/config-modelo", headers={"Authorization": f"Bearer {token}"})
             r.raise_for_status()
             return r.json()
@@ -372,9 +394,7 @@ def publicar_transito() -> dict | None:
         ]
     try:
         with httpx.Client(timeout=300) as c:
-            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
-            r.raise_for_status()
-            token = r.json()["token"]
+            token = _token(c, base, email, password)
             r = c.post(
                 f"{base}/api/admin/stock-transito",
                 headers={"Authorization": f"Bearer {token}"},
@@ -419,9 +439,7 @@ def publicar_ventas_historicas() -> dict | None:
 
     try:
         with httpx.Client(timeout=600) as c:
-            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
-            r.raise_for_status()
-            token = r.json()["token"]
+            token = _token(c, base, email, password)
             cab = {"Authorization": f"Bearer {token}"}
 
             r = c.get(f"{base}/api/ventas-historicas/meta", headers=cab)
@@ -507,9 +525,7 @@ def publicar_stock_unificado() -> dict | None:
         ]
     try:
         with httpx.Client(timeout=300) as c:
-            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
-            r.raise_for_status()
-            token = r.json()["token"]
+            token = _token(c, base, email, password)
             r = c.post(
                 f"{base}/api/admin/stock-unificado",
                 headers={"Authorization": f"Bearer {token}"},
@@ -734,9 +750,7 @@ def publicar_reemplazos(fuentes: dict) -> dict | None:
 
     try:
         with httpx.Client(timeout=300) as c:
-            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
-            r.raise_for_status()
-            token = r.json()["token"]
+            token = _token(c, base, email, password)
             r = c.post(
                 f"{base}/api/admin/reemplazos-ford",
                 headers={"Authorization": f"Bearer {token}"},
@@ -789,9 +803,7 @@ def publicar_sku_proveedor(fuentes: dict) -> dict | None:
         return None
     try:
         with httpx.Client(timeout=300) as c:
-            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
-            r.raise_for_status()
-            token = r.json()["token"]
+            token = _token(c, base, email, password)
             r = c.post(
                 f"{base}/api/requerimiento/sku-proveedor",
                 headers={"Authorization": f"Bearer {token}"},
@@ -838,9 +850,7 @@ def publicar_proveedor_producto(fuentes: dict) -> dict | None:
         return None
     try:
         with httpx.Client(timeout=300) as c:
-            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
-            r.raise_for_status()
-            token = r.json()["token"]
+            token = _token(c, base, email, password)
             r = c.post(
                 f"{base}/api/admin/proveedor-producto",
                 headers={"Authorization": f"Bearer {token}"},
@@ -988,9 +998,7 @@ def _publicar_json(paso: str, ruta: str, filas: list[dict]) -> dict | None:
         return None
     try:
         with httpx.Client(timeout=600) as c:
-            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
-            r.raise_for_status()
-            cab = {"Authorization": f"Bearer {r.json()['token']}"}
+            cab = {"Authorization": f"Bearer {_token(c, base, email, password)}"}
             r = c.post(f"{base}{ruta}", headers=cab, json={"filas": filas})
             r.raise_for_status()
             return r.json()
@@ -1087,11 +1095,10 @@ def recalcular_precios() -> dict | None:
         return None
     try:
         with httpx.Client(timeout=900) as c:
-            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
-            r.raise_for_status()
+            token = _token(c, base, email, password)
             r = c.post(
                 f"{base}/api/precios/recalcular",
-                headers={"Authorization": f"Bearer {r.json()['token']}"},
+                headers={"Authorization": f"Bearer {token}"},
             )
             if r.status_code == 404:
                 # Plataforma sin el modulo desplegado todavia: no es un fallo.
@@ -1127,9 +1134,7 @@ def publicar_lead_time() -> dict | None:
         ]
     try:
         with httpx.Client(timeout=120) as c:
-            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
-            r.raise_for_status()
-            token = r.json()["token"]
+            token = _token(c, base, email, password)
             r = c.post(
                 f"{base}/api/admin/lead-time-proveedor",
                 headers={"Authorization": f"Bearer {token}"},
@@ -1207,11 +1212,10 @@ def _avisar_en_plataforma(titulo: str, descripcion: str, pantalla: str) -> bool:
         return False
     try:
         with httpx.Client(timeout=60) as c:
-            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
-            r.raise_for_status()
+            token = _token(c, base, email, password)
             r = c.post(
                 f"{base}/api/incidencias",
-                headers={"Authorization": f"Bearer {r.json()['token']}"},
+                headers={"Authorization": f"Bearer {token}"},
                 json={"titulo": titulo, "descripcion": descripcion, "pantalla": pantalla},
             )
             r.raise_for_status()
@@ -1243,11 +1247,10 @@ def recargar_instock() -> dict | None:
         return None
     try:
         with httpx.Client(timeout=300) as c:
-            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
-            r.raise_for_status()
+            token = _token(c, base, email, password)
             r = c.post(
                 f"{base}/api/admin/cargar-instock",
-                headers={"Authorization": f"Bearer {r.json()['token']}"},
+                headers={"Authorization": f"Bearer {token}"},
             )
             r.raise_for_status()
             out = r.json()
@@ -1273,6 +1276,12 @@ ESPERA_BASE_SEG = 15
 _TRANSITORIOS = (
     "502", "503", "504", "Bad Gateway", "Service Unavailable", "Gateway Timeout",
     "ConnectError", "ConnectTimeout", "ReadTimeout", "RemoteProtocolError",
+    # 429: Render frena las rafagas despues de un 502 (21-09-2026). Esperar y
+    # volver es exactamente lo que pide.
+    "429", "Too Many Requests",
+    # 401: la sesion se invalido a mitad de corrida (un deploy cambia la clave
+    # de sesion). El reintento vuelve a entrar con `olvidar_token()`.
+    "401", "Unauthorized",
 )
 
 
@@ -1321,6 +1330,9 @@ def publicar_con_reintentos(paso: str, fn, *args):
               f"(intento {intento + 1} de {REINTENTOS})...")
         # El fallo solo cuenta si el ULTIMO intento tambien falla.
         _FALLOS.pop()
+        # Si el token se invalido (un deploy a mitad de corrida), el reintento
+        # entra de nuevo; si el problema era otro, un login mas no molesta.
+        olvidar_token()
         time.sleep(espera)
     return None
 
@@ -1344,9 +1356,7 @@ def avisar_falla(motivo: str, detalle: str = "") -> bool:
     hoy = date.today()
     try:
         with httpx.Client(timeout=60) as c:
-            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
-            r.raise_for_status()
-            token = r.json()["token"]
+            token = _token(c, base, email, password)
             r = c.post(
                 f"{base}/api/incidencias",
                 headers={"Authorization": f"Bearer {token}"},
@@ -1404,9 +1414,7 @@ def _enviar_una_vez(csv_path: Path, oficial: bool = False) -> dict:
         )
 
     with httpx.Client(timeout=300) as c:
-        r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
-        r.raise_for_status()
-        token = r.json()["token"]
+        token = _token(c, base, email, password)
         ruta = "/api/admin/cargar-sugerido" if oficial else "/api/admin/motor/comparar"
         with open(csv_path, "rb") as f:
             r = c.post(

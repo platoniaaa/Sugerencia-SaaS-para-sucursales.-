@@ -74,3 +74,79 @@ def test_un_candado_ilegible_no_bloquea(candado, monkeypatch):
     monkeypatch.setattr(job, "_run", lambda **kw: 0)
 
     assert job.run(oficial=True) == 0
+
+
+# --- Un solo login por corrida ----------------------------------------------------
+#
+# El 21-09-2026 Render devolvio 429 (Too Many Requests) al login despues de un
+# 502: cada paso de publicacion hacia su propio login -14 por corrida, mas uno
+# por cada lote del feed del ERP- y desde el 429 fallaron InStock, compras, el
+# recalculo y hasta la incidencia.
+
+
+class _ClienteFalso:
+    def __init__(self):
+        self.logins = 0
+
+    def post(self, url, **kw):
+        assert url.endswith("/api/auth/login")
+        self.logins += 1
+
+        class R:
+            def raise_for_status(self_inner):
+                pass
+
+            def json(self_inner):
+                return {"token": f"t{self.logins}"}
+        return R()
+
+
+def test_el_token_se_pide_una_vez_y_se_reutiliza():
+    job.olvidar_token()
+    c = _ClienteFalso()
+
+    t1 = job._token(c, "http://x", "a@b", "p")
+    t2 = job._token(c, "http://x", "a@b", "p")
+    t3 = job._token(c, "http://x", "a@b", "p")
+
+    assert t1 == t2 == t3 == "t1"
+    assert c.logins == 1
+    job.olvidar_token()
+
+
+def test_olvidar_el_token_obliga_a_entrar_de_nuevo():
+    job.olvidar_token()
+    c = _ClienteFalso()
+    job._token(c, "http://x", "a@b", "p")
+
+    job.olvidar_token()
+    t = job._token(c, "http://x", "a@b", "p")
+
+    assert t == "t2" and c.logins == 2
+    job.olvidar_token()
+
+
+def test_el_reintento_renueva_la_sesion(monkeypatch):
+    """Si la sesion se invalido a mitad de corrida, el reintento entra de nuevo."""
+    job.olvidar_token()
+    job._TOKEN["valor"] = "viejo"
+    monkeypatch.setattr(job, "ESPERA_BASE_SEG", 0)
+    intentos = []
+
+    def paso():
+        intentos.append(job._TOKEN["valor"])
+        if len(intentos) == 1:
+            job.fallo_publicacion("prueba", RuntimeError("Client error '401 Unauthorized'"))
+        return {"ok": True}
+
+    r = job.publicar_con_reintentos("prueba", paso)
+
+    assert r == {"ok": True}
+    assert intentos[0] == "viejo" and intentos[1] is None, "el segundo intento parte sin token"
+    job.olvidar_token()
+
+
+def test_429_y_401_se_reintentan():
+    assert job._es_transitorio(RuntimeError("Client error '429 Too Many Requests'"))
+    assert job._es_transitorio(RuntimeError("Client error '401 Unauthorized'"))
+    assert not job._es_transitorio(RuntimeError("Client error '403 Forbidden'"))
