@@ -43,6 +43,20 @@ NC_STD = {
 # 1) LINDEROS con Tipo-Venta "VTA MOVIL" -> "LINDEROS VTA MOVIL"
 # 2) fusiones directas de sucursal
 # 3) si el resultado cae en ESPECIALES_CD -> CD_ID
+# Rancagua 2 ES una sucursal distinta (Abastecimiento, 18-ago-2026) y aca sigue
+# fusionada A PROPOSITO: separarla se probó y hace comprar de mas.
+#
+# El sugerido solo crea filas para productos CON DEMANDA en la sucursal. Rancagua 2
+# vende 1.223 lineas contra 20.330 de Rancagua, asi que al separarla quedaron 199
+# filas: de los 456 productos con stock en su bodega, solo 7 tenian fila. Las otras
+# 5.104 unidades quedaban invisibles para el modelo -stock real que existe y que
+# nadie descuenta-, y el sugerido total subia $4,3 millones.
+#
+# Separarla de verdad exige que el motor evalue una sucursal por su STOCK y no solo
+# por su venta. El parche con el intento esta en el historial de la sesion del
+# 18-ago-2026. Cuando se retome, hay que mirar tambien SUCURSALES_INSTOCK en la
+# plataforma: hoy Rancagua 2 esta cubierta por el minimo de pauta solo porque su
+# stock cuenta como de Rancagua.
 FUSIONES_SUCURSAL = {
     "RANCAGUA 2": "RANCAGUA",
 }
@@ -99,6 +113,23 @@ WINSOR_ESCALA_MAD = 1.4826
 # Días hábiles por mes: divisor de la demanda diaria (hardcodeado en el DAX).
 DIAS_HABILES_MES = 22
 
+# --- Centralizacion en el CD ----------------------------------------------------
+# Que filas deja de comprar la sucursal para que se las mande el CD.
+#
+# Hasta ago-2026: clase local C o D + clase agregada A/B contando TODAS las
+# sucursales. El problema es que la agregada la levanta la sucursal que ya vende
+# bien: un repuesto que se mueve en Linderos sale A a nivel nacional y arrastraba
+# a centralizacion a todas las demas, aunque entre ellas casi no se vendiera.
+#
+# Desde ago-2026 (Abastecimiento): solo clase local D, y la agregada se cuenta
+# SOLO sobre las sucursales donde el producto es D. Lo que decide si vale la pena
+# centralizar es cuanto suman las que lo piden poco, no la que ya lo vende sola.
+#
+# Los goldens se congelaron con la regla vieja: `tests_motor` la restaura para
+# seguir validando el resto del calculo (ver `_como_el_dax`).
+CENTRALIZACION_CLASES_LOCALES = ("D",)   # antes ("C", "D")
+CENTRALIZACION_AGREGADA_SOLO_D = True    # antes False: agregada de todas las sucursales
+
 # --- Ciclo de orden y lead time -------------------------------------------------
 
 CICLO_ORDEN_DIAS = 5          # compra directa al proveedor
@@ -107,7 +138,31 @@ CICLO_ORDEN_DIAS = 5          # compra directa al proveedor
 # como cuando la sucursal se abastece del CD. Diverge a proposito del modelo DAX
 # viejo (que usaba 3 via CD); el motor es la fuente de verdad desde el 22-jul.
 CICLO_ORDEN_DIAS_CD = 5       # antes 3; unificado a 5 (ver nota arriba)
-LT_FALLBACK_DIAS = 8          # sin proveedor o sin historial de OC
+# Lead time que se usa cuando el producto no tiene historial de OC y no se sabe a
+# quien se le compra. Era 8, heredado del DAX; baja a 3 el 19-ago-2026.
+#
+# OJO: este valor es solo el DEFAULT. El que manda es `lead_time_fallback_dias` de
+# la configuracion del modelo en la plataforma, que `correr_motor_real.aplicar_config`
+# escribe encima en cada corrida. Cambiar el numero de aca NO cambia el sugerido
+# mientras la plataforma responda; hay que editarlo en la pantalla de calibracion.
+#
+# De donde sale el 3: medido sobre las filas que SI tienen historial y EXCLUYENDO
+# importados -que son otro mundo: mediana 73 dias, hasta 148-, los nacionales dan
+# mediana 3,66 y promedio 4,22 dias, con el 47% entre 3 y 4. Con el dia de gestion
+# sumado, un fallback de 3 se ve como 4 en pantalla: justo entre ambos.
+#
+# El fallback se aplica casi solo a nacionales (2.776 de 2.968 filas), asi que
+# calibrarlo con ellos es lo correcto. Quedan 2 filas importadas que lo usan y que
+# con 4 dias quedan subestimadas.
+LT_FALLBACK_DIAS = 3          # default; lo pisa la config de la plataforma
+
+# Dias que tarda Abastecimiento en gestionar la compra, ANTES de que exista la OC.
+# El lead time se mide desde la fecha de la OC hasta la recepcion, asi que ese
+# tramo -revisar el sugerido, decidir, emitir- nunca estuvo contado: el modelo
+# asumia que la orden sale el mismo dia que se detecta la necesidad.
+# Pedido por Abastecimiento (13-ago-2026). Se suma al LT del PROVEEDOR; el
+# traslado CD -> sucursal no lo lleva, porque ahi no hay compra que gestionar.
+LT_GESTION_ABASTECIMIENTO_DIAS = 1
 
 # --- Cálculo del lead time por proveedor desde el seguimiento (OC -> P/E) --------
 # Réplica de las tablas 'Lead Time Proveedor' y 'Lead Time Proveedor Sucursal':

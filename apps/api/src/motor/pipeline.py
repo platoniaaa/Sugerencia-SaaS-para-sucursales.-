@@ -29,7 +29,7 @@ import polars as pl
 
 from . import parametros as P
 from .clasificacion_abc import calcular_abc
-from .demanda import calcular_demanda
+from .demanda import calcular_demanda, calcular_serie_mensual, ultimo_mes_cerrado
 from .lead_time import calcular_lead_time
 from .lead_time_proveedor import calcular_lead_time_proveedor, calcular_lead_time_proveedor_sucursal
 from .safety_stock import calcular_safety_stock
@@ -37,6 +37,35 @@ from .sugerido import _grupo_reemplazos, _stock_activo, calcular_sugerido
 from .traslados import calcular_traslados
 
 _LOCAL = ["producto_master", "sucursal_final"]
+# Las 12 columnas de venta mensual (01 = ultimo mes cerrado) y sus promedios.
+_COLS_SERIE = ([f"venta_mes_{i:02d}" for i in range(1, P.VENTANA_M12 + 1)]
+               + ["prom_vta_3m", "prom_vta_6m", "prom_vta_12m"])
+
+# Precios de la lista de FORD que son de COMPRA. El precio recomendado es el menor
+# de estos.
+#
+# Quedan FUERA `precio_publico_ford` y `precio_publico_iva_ford`: son lo que paga
+# el cliente, no lo que Curifor le paga a FORD. Hoy no cambiarian ningun
+# resultado -no ganan el minimo en ninguno de los 3.103 productos con precio-,
+# pero hay 13 productos donde el publico esta por debajo del dealer, y el dia que
+# uno de esos quede mas bajo que el resto la columna mostraria un precio de venta
+# como recomendacion de compra.
+#
+# El orden IMPORTA: es el que desempata. FORD publica dealer, reposicion, urgente
+# VOR y promociones con el mismo valor en la mayoria de los productos, asi que casi
+# siempre hay empate en el minimo. Se muestra el primero de esta lista que lo
+# alcanza, y por eso "Dealer" va primero: cuando todos empatan, la respuesta util
+# es "es el precio normal", no "es una promocion" -que haria salir a buscar una
+# promo que no existe-.
+_PRECIOS_COMPRA_FORD_ETIQUETA = [
+    ("precio_dealer_ford", "Dealer"),
+    ("precio_flota_ford", "Flota"),
+    ("precio_promociones_ford", "Promociones"),
+    ("precio_reposicion_ford", "Reposicion"),
+    ("precio_urgente_vor_ford", "Urgente VOR"),
+    ("precio_urgente_recargo15_ford", "Urgente +15%"),
+]
+_PRECIOS_COMPRA_FORD = [c for c, _ in _PRECIOS_COMPRA_FORD_ETIQUETA]
 
 # (nombre en Dim Sucursal ausente) -> nombre que muestra el modelo.
 _NOMBRE_FALLBACK = {
@@ -168,6 +197,19 @@ def ejecutar(
     r = r.join(dem.select([*_LOCAL, "demanda_mensual", "desv_std_mensual", "demanda_diaria"]),
                on=_LOCAL, how="left")
 
+    # Venta mes a mes de los ultimos 12 y sus promedios. Es la misma serie de la
+    # demanda pero sin winsorizar, para que las doce columnas sumen el promedio que
+    # esta al lado (ver `calcular_serie_mensual`).
+    serie = calcular_serie_mensual(ventas, mapeo, dim_p, fin_mes_cerrado)
+    r = r.join(serie, on=_LOCAL, how="left")
+    # Un producto sin ninguna venta en la ventana no tiene fila en la serie, y con
+    # el left join queda en null. Ahi el dato NO falta: vendio cero, y eso es
+    # justamente lo que el comprador necesita ver.
+    r = r.with_columns([pl.col(c).fill_null(0.0) for c in _COLS_SERIE])
+    # A que mes corresponde `venta_mes_01`. Sale de la fecha de corte y no de la
+    # venta, asi que vale igual para las filas que no vendieron nada.
+    r = r.with_columns(pl.lit(ultimo_mes_cerrado(fin_mes_cerrado)).alias("periodo_ultimo_mes"))
+
     # Nombre Sucursal: Dim Sucursal -> fallbacks del modelo -> el ID.
     nombres = dim_s.select(pl.col("SucursalID"), pl.col("Nombre").alias("_nombre"))
     r = r.join(nombres, left_on="sucursal_final", right_on="SucursalID", how="left")
@@ -188,10 +230,20 @@ def ejecutar(
     )
 
     # Reemplazos: los otros productos del grupo (excluye el master).
+    #
+    # `.sort()` antes de pegar: `group_by` no garantiza el orden dentro del grupo,
+    # asi que sin esto la MISMA base daba "13 F87Z8101AA, 19 F8RZ8100AA" en una
+    # corrida y "19 F8RZ8100AA, 13 F87Z8101AA" en la siguiente. Son 204 filas de
+    # 18.094 (medido el 24-08-2026 con dos corridas de `construir_csv`).
+    #
+    # No cambia ningun numero -es una columna de texto- pero ensucia cualquier
+    # comparacion entre corridas, que es justo la herramienta con la que se mide si
+    # un cambio movio el sugerido. Es la misma trampa que el `.unique()` del mapeo:
+    # ahi costo atribuir $97.548 a los reemplazos de FORD que en realidad eran ruido.
     reempl = (
         mapeo.filter(pl.col("Producto") != pl.col("Producto_Master"))
         .group_by("Producto_Master")
-        .agg(pl.col("Producto").str.join(", ").alias("reemplazos"))
+        .agg(pl.col("Producto").sort().str.join(", ").alias("reemplazos"))
         .rename({"Producto_Master": "producto_master"})
     )
     r = r.join(reempl, on="producto_master", how="left")
@@ -293,6 +345,34 @@ def ejecutar(
         r = r.with_columns([pl.lit(None, dtype=pl.Float64).alias(c) for c in faltantes])
     r = r.drop("clave_precio")
 
+    # Precio recomendado de compra: el MENOR de los precios de compra de FORD.
+    #
+    # `min_horizontal` ignora los nulos, asi que un producto al que le falta la
+    # mitad de la lista igual devuelve el menor de lo que si tiene; si no tiene
+    # ninguno, queda nulo (y no cero, que se leeria como "gratis").
+    #
+    # Se descartan los <= 0 antes de comparar: un cero en la lista del fabricante
+    # es un dato que falta, no un regalo, y ganaria el minimo siempre.
+    r = r.with_columns(
+        pl.min_horizontal([
+            pl.when(pl.col(c) > 0).then(pl.col(c)).otherwise(None)
+            for c in _PRECIOS_COMPRA_FORD
+        ]).alias("precio_recomendado_compra")
+    )
+    # De que lista salio ese precio. Sin esto, "$32.422" no dice si es una promo,
+    # el precio de flota o el normal, que es justo lo que decide si conviene pedir
+    # ahora o esperar. `coalesce` toma la PRIMERA etiqueta que alcanza el minimo,
+    # y el orden de la lista es el desempate.
+    r = r.with_columns(
+        pl.coalesce([
+            pl.when((pl.col(c) > 0)
+                    & (pl.col(c) == pl.col("precio_recomendado_compra")))
+            .then(pl.lit(etiqueta))
+            .otherwise(None)
+            for c, etiqueta in _PRECIOS_COMPRA_FORD_ETIQUETA
+        ]).alias("tipo_precio_recomendado")
+    )
+
     # Valor Sugerido CLP = Sugerido * Costo (solo si sugerido>0 y hay costo).
     r = r.with_columns(
         pl.when((pl.col("sugerido") > 0) & pl.col("costo_unitario").is_not_null())
@@ -325,6 +405,13 @@ _CONTRATO: list[tuple[str, str]] = [
     ("Demanda Mensual", "demanda_mensual"),
     ("Desv Std Mensual", "desv_std_mensual"),
     ("Demanda Diaria", "demanda_diaria"),
+    # Venta mes a mes. El nombre es posicional -01 es el ultimo mes cerrado- y
+    # `Periodo Ultimo Mes` es el que le pone fecha a esa posicion en la plataforma.
+    *[(f"Venta Mes {i:02d}", f"venta_mes_{i:02d}") for i in range(1, P.VENTANA_M12 + 1)],
+    ("Prom Vta 3m", "prom_vta_3m"),
+    ("Prom Vta 6m", "prom_vta_6m"),
+    ("Prom Vta 12m", "prom_vta_12m"),
+    ("Periodo Ultimo Mes", "periodo_ultimo_mes"),
     ("Stock de Seguridad", "stock_seguridad"),
     ("Costo Unitario", "costo_unitario"),
     ("Es Importado", "es_importado"),
@@ -360,6 +447,8 @@ _CONTRATO: list[tuple[str, str]] = [
     ("precio_promociones_ford", "precio_promociones_ford"),
     ("precio_urgente_recargo15_ford", "precio_urgente_recargo15_ford"),
     ("precio_flota_ford", "precio_flota_ford"),
+    ("precio_recomendado_compra", "precio_recomendado_compra"),
+    ("tipo_precio_recomendado", "tipo_precio_recomendado"),
     ("precio_sugerido_gilde", "precio_sugerido_gilde"),
     ("precio_dealer_gilde", "precio_dealer_gilde"),
     ("precio_final_dealer_gilde", "precio_final_dealer_gilde"),

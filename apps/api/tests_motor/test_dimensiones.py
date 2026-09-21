@@ -140,7 +140,11 @@ def test_importados_son_los_del_seguimiento_importado():
 
 def test_frescura_marca_los_archivos_viejos(tmp_path, monkeypatch):
     """Olvidar una exportacion no da ningun error: el motor calcula igual y publica
-    un sugerido con el stock de la semana pasada. Este chequeo es el que avisa."""
+    un sugerido con el stock de la semana pasada. Este chequeo es el que avisa.
+
+    La edad va en dias HABILES: los archivos se exportan en dias de trabajo, asi
+    que contar corridos daba por vencido todos los lunes un archivo del viernes.
+    Del 12-07 al 22-07-2026 hay 10 dias corridos y 8 habiles."""
     from src.jobs import correr_motor_real as job
     from src.motor import fuentes
 
@@ -160,4 +164,6 @@ def test_frescura_marca_los_archivos_viejos(tmp_path, monkeypatch):
         lambda f: viejo if f == "stock_bodegas" else (_ for _ in ()).throw(FileNotFoundError()),
     )
     avisos = job.revisar_frescura(hoy)
-    assert len(avisos) == 1 and "Stock bodegas.xlsx" in avisos[0] and "10 dias" in avisos[0]
+    assert len(avisos) == 1
+    assert "Stock bodegas.xlsx" in avisos[0]
+    assert "8 dias habiles" in avisos[0], avisos[0]

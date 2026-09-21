@@ -20,6 +20,11 @@ from datetime import date
 
 import polars as pl
 
+# `clave_precio` normaliza un codigo para compararlo entre el maestro de Curifor y
+# la lista de un proveedor. Vive en el lector porque nacio ahi con los precios; se
+# reusa aca para los reemplazos. `lectores_excel` no importa este modulo: sin ciclo.
+from .lectores_excel import clave_precio
+
 # --------------------------------------------------------------------------- #
 # Dim Sucursal
 # --------------------------------------------------------------------------- #
@@ -304,6 +309,147 @@ def calcular_mapeo_master(
         grupo.join(elegido, on="master_orig", how="left")
         .select(["Producto", "Producto_Master"]).unique(subset=["Producto"], keep="first")
     )
+
+
+def ampliar_mapeo_con_ford(
+    mapeo: pl.DataFrame,
+    reemplazos_ford: pl.DataFrame,
+    productos: pl.Series | list[str],
+    # `ventas` y `fin_mes_cerrado` quedaron SIN USO al pasar el master al codigo
+    # vigente (antes se elegia por venta de 6 meses). Se conservan en la firma para
+    # no tocar 17 llamadas en el mismo commit que cambia la regla de negocio; si la
+    # regla se mantiene, corresponde sacarlos.
+    ventas: pl.DataFrame,
+    fin_mes_cerrado: date,
+) -> pl.DataFrame:
+    """Arma los grupos de reemplazo de FORD; el mix de Andres llena el resto.
+
+    **FORD MANDA.** En un codigo que las dos fuentes reclaman gana lo que dice el
+    portal: es la unica que sabe cual pieza sigue en produccion, y esa respuesta no
+    se vota. El mix se aplica en todo lo que FORD no toca.
+
+    Hasta el 24-08-2026 era al reves, y por una razon medida: al 07-08, con la
+    lista ESTATICA de 39.622 codigos, invertirlo dejaba 41 productos sin grupo
+    porque los pares nuevos creaban ambiguedades que hacian caer grupos que
+    funcionaban.
+
+    Lo que cambio no es el criterio sino la fuente. Ahora se consulta el portal por
+    los codigos que Curifor realmente tiene (proyecto WINGS, corrida semanal) y se
+    publica una fila por miembro del grupo, no una por codigo consultado. Medido de
+    nuevo el 24-08-2026 con esos datos:
+
+        productos dentro de un grupo    1.808 -> 1.822
+        quedan sueltos                      6   (eran 41 con la lista estatica)
+        entran a un grupo                  20
+        cambian de master                  25
+
+    Y los cambios de master son la razon de ser del cambio: hoy `19 CC1Z9365E`
+    cuelga de `17 2499389`, o sea que el grupo esta representado por el codigo que
+    FORD dio de baja y la orden de compra sale con ese. Invertido, cuelga del
+    vigente.
+
+    Si esta medicion se vuelve a correr y los "sueltos" se acercan otra vez a 41,
+    corresponde volver a discutirlo: el numero bajo porque mejoro la fuente, no
+    porque el riesgo no exista.
+
+    Se toman las dos direcciones de la lista (`Reemplaza_A` y `Reemplazado_Por`) y
+    se aplican las mismas salvaguardas del DAX: un producto no puede pertenecer a
+    dos grupos, y el master del grupo es el que mas vendio en 6 meses cerrados.
+    A diferencia del mix, aca no hay tope de 3 reemplazos: la lista de FORD trae
+    cadenas mas largas y truncarlas partiria un grupo real en dos.
+    """
+    if reemplazos_ford.is_empty():
+        return mapeo
+
+    # Clave normalizada -> codigo real de Curifor.
+    #
+    # Se ORDENA antes de elegir, y no es cosmetico: 2.399 claves del maestro tienen
+    # mas de un codigo de Curifor ("25 CN1Z8620E" y "19 CN1Z8620E" son el mismo
+    # repuesto con distinto rubro). Sin ordenar, el que ganaba dependia del orden en
+    # que llegara `productos`, que sale de un `.unique()` de polars y NO es estable.
+    # Medido el 22-08-2026: dos corridas IDENTICAS de la misma base daban 15 y 19
+    # filas distintas, y un mismo producto pedia $61.286 en una y $137.152 en la
+    # otra. Con el orden fijo, dos corridas iguales dan lo mismo.
+    #
+    # Cual de los codigos duplicados queda es arbitrario (gana el rubro mas bajo):
+    # lo que importa aca es que no cambie entre corridas. El arreglo de fondo es
+    # limpiar los duplicados en el maestro, y eso es de Repuestos.
+    por_clave: dict[str, str] = {}
+    for p in sorted(productos.to_list() if isinstance(productos, pl.Series) else productos):
+        k = clave_precio(p)
+        if k and k not in por_clave:
+            por_clave[k] = p
+
+    # vigente -> {viejos}, ambas direcciones, solo con los dos lados en Curifor.
+    grupos: dict[str, set[str]] = {}
+    for fila in reemplazos_ford.iter_rows(named=True):
+        yo = por_clave.get(fila["clave_precio"])
+        if not yo:
+            continue
+        viejos = grupos.setdefault(yo, set())
+        # `Reemplaza_A` sale de la cadena del portal y no depende de consultar al
+        # sucesor: entra siempre. Es ademas de donde viene casi todo lo util.
+        for k in fila["reemplaza_a"] or []:
+            otro = por_clave.get(k)
+            if otro and otro != yo:
+                viejos.add(otro)
+        # `Reemplazado_Por` solo agrupa con el sucesor CONFIRMADO. Sin confirmar
+        # (999 de 1.070 filas) no se sabe si FORD no tiene sucesor o si el codigo
+        # consultado se armo mal; agrupar con un codigo equivocado suma el stock de
+        # dos piezas distintas y deja de pedirse algo que si hace falta. Al
+        # 07-08-2026 esto excluye 22 pares, contra 16 confirmados que si entran.
+        if fila["clave_vigente"] and fila["sucesor_confirmado"]:
+            nuevo = por_clave.get(fila["clave_vigente"])
+            if nuevo and nuevo != yo:
+                grupos.setdefault(nuevo, set()).add(yo)
+    grupos = {g: v for g, v in grupos.items() if v}
+    if not grupos:
+        return mapeo
+
+    # Salvaguarda 1: si A agrupa a B y B agrupa a alguien, el grupo es ambiguo.
+    reemplazados = {x for v in grupos.values() for x in v}
+    grupos = {g: v for g, v in grupos.items() if g not in reemplazados}
+    # Salvaguarda 2: un producto reclamado por dos grupos distintos sale de los dos.
+    duenos: dict[str, int] = {}
+    for v in grupos.values():
+        for x in v:
+            duenos[x] = duenos.get(x, 0) + 1
+    compartidos = {x for x, n in duenos.items() if n > 1}
+    grupos = {g: v - compartidos for g, v in grupos.items()}
+    grupos = {g: v for g, v in grupos.items() if v}
+    if not grupos:
+        return mapeo
+
+    filas = [
+        {"master_orig": g, "Producto": p}
+        for g, v in grupos.items()
+        for p in (g, *sorted(v))
+    ]
+    grupo = pl.DataFrame(filas, schema={"master_orig": pl.Utf8, "Producto": pl.Utf8}).unique()
+
+    # Master del grupo = el codigo VIGENTE de FORD, no el que mas vendio.
+    #
+    # Antes se elegia por venta de 6 meses, igual que en el mix. El problema es que
+    # el codigo viejo casi siempre vendio mas —lleva anos en catalogo— asi que el
+    # grupo terminaba representado por una pieza que FORD ya no fabrica, y la orden
+    # de compra salia con ese codigo. Paso en produccion: 25 MB3Z19N619C en Chillan
+    # pidiendo 5 unidades ($111.137) de un codigo dado de baja, teniendo el vigente
+    # 19 MB3Z19N619A en el maestro.
+    #
+    # Elegir por ventas tiene sentido en el mix, donde los codigos de un grupo son
+    # equivalentes entre si y ninguno esta muerto. Aca no: FORD ya dijo cual sigue
+    # vivo, y esa respuesta no se vota.
+    #
+    # El stock y la demanda del viejo se siguen sumando al grupo (eso no cambia),
+    # asi que lo que hay en bodega se consume primero y recien cuando el stock cruza
+    # el punto de pedido se compra, ya con el codigo correcto.
+    nuevo = (
+        grupo.select(["Producto", pl.col("master_orig").alias("Producto_Master")])
+        .unique(subset=["Producto"], keep="first")
+    )
+    # FORD va primero: en un codigo que las dos fuentes reclaman, gana lo que dice
+    # el portal. El mix llena todo lo que FORD no toco.
+    return pl.concat([nuevo, mapeo]).unique(subset=["Producto"], keep="first")
 
 
 def _mes_menos(fin_mes_cerrado: date, meses: int) -> date:

@@ -29,9 +29,12 @@ def test_leer_stock_mapea_sucursal(tmp_path):
         ["P1", "d", "UNIDAD", 10, "BODEGA ML", 500],          # -> CD REPUESTOS
         ["P2", "d", "UNIDAD", 5, "BODEGA DYP TALCA 2", 600],  # -> TALCA (2)
         ["P3", "d", "UNIDAD", 3, "la florida", 700],          # case-insensitive -> LA FLORIDA
-        ["P4", "d", "UNIDAD", 7, "RANCAGUA 3", 800],          # alias -> RANCAGUA
+        ["P4", "d", "UNIDAD", 7, "LO BLANCO 2", 800],         # alias -> LO BLANCO
         ["P5", "d", "UNIDAD", 1, "BODEGA RARA", 900],         # desconocida -> DESCONOCIDO
         ["P6", "d", "UNIDAD", 2, None, 100],                  # nula -> DESCONOCIDO
+        # Rancagua 2 sigue consolidada en Rancagua: ver parametros.FUSIONES_SUCURSAL.
+        ["P7", "d", "UNIDAD", 4, "RANCAGUA 2", 400],
+        ["P8", "d", "UNIDAD", 6, "RANCAGUA", 400],
     ])
     df = FR.leer_stock(ruta)
     # `Bodega` se conserva desde jul-2026: la plataforma muestra el stock por
@@ -41,9 +44,11 @@ def test_leer_stock_mapea_sucursal(tmp_path):
     assert m["P1"] == "CD REPUESTOS"
     assert m["P2"] == "TALCA (2)"
     assert m["P3"] == "LA FLORIDA"
-    assert m["P4"] == "RANCAGUA"
+    assert m["P4"] == "LO BLANCO"
     assert m["P5"] == "DESCONOCIDO"
     assert m["P6"] == "DESCONOCIDO"
+    assert m["P7"] == "RANCAGUA"
+    assert m["P8"] == "RANCAGUA"
     # Stock queda entero; Costo texto (el modelo lo pasa por VALUE()).
     assert df.schema["Stock"] == pl.Int64
     assert df.filter(pl.col("Producto") == "P1").select("Stock").item() == 10

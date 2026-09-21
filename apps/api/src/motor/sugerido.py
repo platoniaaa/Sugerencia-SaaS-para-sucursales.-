@@ -57,14 +57,30 @@ def _stock_activo(miembros: pl.DataFrame, stock: pl.DataFrame, stock_frontera: p
     )
 
 
-def _stock_transito(seg: pl.DataFrame, hoy: date) -> pl.DataFrame:
+def _stock_transito(
+    seg: pl.DataFrame, hoy: date, *, con_fecha: bool = False,
+    miembros: pl.DataFrame | None = None,
+) -> pl.DataFrame:
     """Tránsito vigente por (producto, sucursal) desde el seguimiento.
 
-    SIN expandir el grupo de reemplazos: aunque la medida DAX intenta expandir
-    con TREATAS, la relación bidireccional Sugerido⇄Dim Producto→Seguimiento
-    deja el seguimiento pre-filtrado al master y la intersección anula la
-    expansión. El comportamiento real del modelo (y del Excel de la
-    plataforma) es tránsito solo del producto master."""
+    Con `miembros` (la salida de `_grupo_reemplazos`) el tránsito se suma POR
+    GRUPO, igual que el stock. Sin él se cuenta solo el del producto master, que
+    era el comportamiento del DAX: su medida intenta expandir con TREATAS, pero
+    la relación bidireccional Sugerido⇄Dim Producto→Seguimiento deja el
+    seguimiento pre-filtrado al master y la intersección anula la expansión.
+
+    Por qué se agrupa ahora: las órdenes de compra viejas quedaron emitidas con
+    el código viejo. Mientras el master fue ese mismo código no se notaba, pero
+    al pasar el master al código vigente de FORD (ago-2026) el tránsito quedaba
+    huérfano: 42 unidades de 25 MB3Z19N619C en camino dejaban de contarse y el
+    modelo pedía 21 donde antes pedía 5. Si el stock del grupo se suma, lo que
+    viene en camino para ese grupo también: es la misma pieza.
+
+    `con_fecha=True` agrega la OC más antigua del grupo. No lo usa el sugerido
+    (por eso es opcional y no cambia lo que ya se calcula): lo usa el job que
+    publica el tránsito a la plataforma, donde el comprador necesita saber no
+    solo cuánto viene sino desde cuándo lleva pedido.
+    """
     estado_oc = pl.col("EstadoOC").str.to_lowercase()
     estado_doc = pl.col("EstadoDoc").str.to_lowercase()
     origen = pl.col("Origen").str.to_lowercase()
@@ -88,9 +104,26 @@ def _stock_transito(seg: pl.DataFrame, hoy: date) -> pl.DataFrame:
     )
 
     vigente = seg.filter(curifor | frontera)  # orígenes disjuntos: unión == suma de ambas ramas
+    agregados = [pl.col("Cantidad").sum().alias("stock_transito")]
+    if con_fecha:
+        # La fecha del documento cuando la OC es de Frontera (ahi FechaOC no aplica).
+        agregados.append(
+            pl.min_horizontal(
+                pl.col("FechaOC").min(), pl.col("FechaDoc").min()
+            ).alias("pedido_desde")
+        )
+    if miembros is not None:
+        # El seguimiento trae el codigo con que se emitio la OC; se lleva al master
+        # de su grupo antes de sumar, igual que `_stock_activo` hace con el stock.
+        return (
+            miembros.join(vigente, left_on="miembro", right_on="Producto", how="inner")
+            .group_by(["producto_master", "SucursalID"])
+            .agg(agregados)
+            .rename({"SucursalID": "sucursal_final"})
+        )
     return (
         vigente.group_by(["Producto", "SucursalID"])
-        .agg(pl.col("Cantidad").sum().alias("stock_transito"))
+        .agg(agregados)
         .rename({"Producto": "producto_master", "SucursalID": "sucursal_final"})
     )
 
@@ -112,7 +145,7 @@ def calcular_sugerido(
     miembros = _grupo_reemplazos(r, mapeo)
     r = (
         r.join(_stock_activo(miembros, stock, stock_frontera), on=_LOCAL, how="left")
-        .join(_stock_transito(seg_transito, hoy), on=_LOCAL, how="left")
+        .join(_stock_transito(seg_transito, hoy, miembros=miembros), on=_LOCAL, how="left")
         .with_columns(
             pl.col("stock_activo").fill_null(0),
             pl.col("stock_transito").fill_null(0),
