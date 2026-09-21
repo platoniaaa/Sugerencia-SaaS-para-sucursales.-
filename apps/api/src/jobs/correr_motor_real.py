@@ -1515,6 +1515,49 @@ def frescura_que_frena(hoy: date | None = None) -> list[str]:
     return [v for v in revisar_frescura(hoy) if "no frena la carga" not in v]
 
 
+# Desde que dia del mes la falta del mes cerrado FRENA la carga. Los primeros dias
+# el respaldo del mes recien cerrado puede no estar exportado todavia y se avisa;
+# desde el 4 se frena: un sugerido calculado con un mes en cero pide de menos.
+DIA_DESDE_QUE_FRENA_VENTAS = 4
+
+
+def revisar_ventas_mes_cerrado(csv_path, hoy: date | None = None) -> tuple[str | None, str | None]:
+    """(aviso, bloqueo): si el CSV recien calculado trae el ultimo mes cerrado
+    SIN ventas.
+
+    Paso del 01 al 21-09-2026 sin que nadie lo notara: el respaldo `2026 (6).xlsx`
+    terminaba el 31-07, el motor tomo agosto como ultimo mes cerrado y las 17.102
+    filas salieron con `Venta Mes 01 = 0`. Todo lo que vendio en agosto perdio un
+    mes en la clase ABC y la demanda promedio un mes vacio: tres semanas pidiendo
+    de menos. El control de frescura no lo vio porque los respaldos de venta de
+    Curifor se eligen por descarte y no tienen fuente propia.
+
+    Se mira el EFECTO (la columna del CSV) y no el archivo: asi da lo mismo si las
+    ventas vienen del Excel, del SQL o del snapshot.
+    """
+    import csv
+
+    hoy = hoy or date.today()
+    periodo, total, filas = None, 0.0, 0
+    with open(csv_path, encoding="utf-8", newline="") as f:
+        for r in csv.DictReader(f):
+            filas += 1
+            periodo = periodo or r.get("Periodo Ultimo Mes")
+            try:
+                total += float(r.get("Venta Mes 01") or 0)
+            except ValueError:
+                pass
+    if not filas or total > 0:
+        return None, None
+    mes = f"{periodo[4:6]}-{periodo[:4]}" if periodo and len(periodo) == 6 else str(periodo)
+    texto = (f"El respaldo de ventas no trae el mes {mes}: las {filas:,} filas del sugerido "
+             f"salen con la venta de ese mes en cero, como si no se hubiera vendido nada. "
+             f"Exportar el respaldo de ventas del año (Bases de datos\\Ventas) y volver a correr.")
+    if hoy.day < DIA_DESDE_QUE_FRENA_VENTAS:
+        return texto + f" (avisa hasta el dia {DIA_DESDE_QUE_FRENA_VENTAS}; despues frena la carga)", None
+    return None, texto
+
+
 def _proceso_vivo(pid: int) -> bool:
     """Si el PID sigue corriendo. En Windows `os.kill(pid, 0)` no sirve para
     preguntar, asi que se consulta al sistema."""
@@ -1608,6 +1651,13 @@ def _run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
     except Exception as e:  # noqa: BLE001
         return _fallar("El motor no pudo calcular el sugerido.", f"{type(e).__name__}: {e}")
     print(f"CSV generado: {csv_path}")
+
+    aviso_ventas, bloqueo_ventas = revisar_ventas_mes_cerrado(csv_path)
+    if aviso_ventas:
+        print(f"  AVISO: {aviso_ventas}")
+    if bloqueo_ventas and oficial and not ignorar_frescura:
+        return _fallar("No se carga a produccion con el ultimo mes de ventas vacio.",
+                       bloqueo_ventas)
 
     try:
         resultado = enviar(csv_path, oficial=oficial)
