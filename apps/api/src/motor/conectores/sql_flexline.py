@@ -83,10 +83,11 @@ ORIGEN_NACIONAL = "Curifor Nacional"
 ORIGEN_IMPORTADO = "Curifor Importado"
 ORIGEN_FRONTERA = "Frontera Nacional"
 
-# tipoDocto de notas de crédito: restan (CantidadAjustada = -ABS). Resto suma.
-# (Regla de la columna CantidadAjustada de 'Ventas Unificadas'.) OJO: la NC de FRONTERA
-# es "NOTA CREDITO ST", que NO está en esta lista -> en Frontera las NC SUMAN. Es el
-# comportamiento real del modelo (la columna se calcula igual para ambas fuentes).
+# Lista fija ANTERIOR de notas de credito (solo referencia: ya no decide el signo).
+# Dejaba fuera 10 de los 15 tipos de credito -NOTA CREDITO ST, NC GARANTIA S/T, NOTA
+# CREDITO S/T...- y la refacturacion con monto negativo, que sumaban como venta: un
+# turbo anulado y refacturado contaba 4 ventas en un mes en vez de 0. La regla vigente
+# es `cantidad_ajustada_expr`.
 NC_TIPODOCTO = {
     "NC CLIENTE S/T", "NC-ELECTR REPTO", "NC SEGURO S/T", "NC LIQ FACT", "NC-ELECTR GD_FAC",
 }
@@ -111,6 +112,8 @@ FRONTERA_VENTAS_SUCURSAL_MAP = {
 
 # Columnas crudas de ventas que usa el motor (comunes al SQL Curifor y al histórico).
 _COLS_CRUDO_VENTAS_CURIFOR = ["Producto", "SUCURSAL", "Tipo-Venta", "Fecha", "Cantidad", "tipoDocto", "tipoproducto"]
+# El monto neto del documento: si es negativo, el documento es de credito.
+COL_TOTAL_NETA = "Total Neta"
 
 # --- Consultas SQL (verbatim del modelo) -----------------------------------------
 # Seguimiento nacional: se selecciona solo lo que el motor necesita (el modelo trae
@@ -254,10 +257,23 @@ def mapear_sucursal_id(codigo: str | None) -> str:
     return SUCURSAL_ID_MAP.get(codigo, SUCURSAL_ID_DEFAULT)
 
 
-def cantidad_ajustada_expr() -> pl.Expr:
-    """CantidadAjustada: -ABS(Cantidad) si tipoDocto es NC, si no ABS(Cantidad)."""
+def cantidad_ajustada_expr(con_monto: bool = True) -> pl.Expr:
+    """CantidadAjustada: -ABS(Cantidad) si el documento es de credito, si no ABS(Cantidad).
+
+    Misma regla que la columna CantidadAjustada de 'VentasUnificadas' en el modelo de
+    Power BI de Abastecimiento (revisada el 22-10-2026), para que el motor cuente las
+    ventas igual que el reporte de Consumos: es credito si el monto neto es negativo, o
+    si el tipo de documento empieza con "NC" o con "NOTA CREDITO" (sin importar
+    mayusculas ni espacios). Vale igual para Curifor y para Frontera.
+
+    `con_monto=False` cuando el origen no trae la columna `Total Neta` (consulta SQL
+    vieja): entonces decide solo el nombre del documento."""
+    doc = pl.col("tipoDocto").cast(pl.Utf8).str.strip_chars().str.to_uppercase()
+    credito = doc.str.starts_with("NC") | doc.str.starts_with("NOTA CREDITO")
+    if con_monto:
+        credito = credito | (pl.col(COL_TOTAL_NETA).cast(pl.Float64, strict=False) < 0)
     return (
-        pl.when(pl.col("tipoDocto").is_in(list(NC_TIPODOCTO)))
+        pl.when(credito.fill_null(False))
         .then(-pl.col("Cantidad").abs())
         .otherwise(pl.col("Cantidad").abs())
     )
@@ -350,14 +366,13 @@ def normalizar_ventas_curifor(
     columnas crudas), se anexa ANTES de calcular — igual que el `Table.Combine` del
     modelo — para que la historia quede completa (cierra la columna Empresa)."""
     base = raw
+    con_monto = COL_TOTAL_NETA in raw.columns and (historico is None or COL_TOTAL_NETA in historico.columns)
     if historico is not None:
-        base = pl.concat(
-            [raw.select(_COLS_CRUDO_VENTAS_CURIFOR), historico.select(_COLS_CRUDO_VENTAS_CURIFOR)],
-            how="vertical_relaxed",
-        )
+        cols = _COLS_CRUDO_VENTAS_CURIFOR + ([COL_TOTAL_NETA] if con_monto else [])
+        base = pl.concat([raw.select(cols), historico.select(cols)], how="vertical_relaxed")
     df = base.filter(pl.col("tipoproducto").is_in(list(TIPOPRODUCTO_REPUESTOS)))
     return df.with_columns(
-        cantidad_ajustada_expr().alias("CantidadAjustada"),
+        cantidad_ajustada_expr(con_monto).alias("CantidadAjustada"),
         pl.lit("Curifor").alias("Fuente"),
     ).select([
         "Producto",
@@ -377,7 +392,8 @@ def normalizar_ventas_frontera(raw: pl.DataFrame) -> pl.DataFrame:
       1. tipoproducto = "REPUESTO"  (filtro M posterior al SELECT).
       2. Docto-Emitido = "Emitido"  y  Documento IN FRONTERA_VENTAS_DOCTOS.
       3. SUCURSAL: des-prefija las 5 del SWITCH; el resto pasa igual.
-      4. CantidadAjustada con tipoDocto = Documento (la NC de Frontera SUMA, ver NC_TIPODOCTO).
+      4. CantidadAjustada con tipoDocto = Documento: la NOTA CREDITO ST de Frontera RESTA,
+         igual que en el modelo de Power BI (antes sumaba, con la lista fija vieja).
     """
     df = raw.filter(
         (pl.col("tipoproducto") == "REPUESTO")
@@ -390,7 +406,7 @@ def normalizar_ventas_frontera(raw: pl.DataFrame) -> pl.DataFrame:
         pl.col("SUCURSAL").replace(FRONTERA_VENTAS_SUCURSAL_MAP).alias("SUCURSAL"),
     )
     return df.with_columns(
-        cantidad_ajustada_expr().alias("CantidadAjustada"),
+        cantidad_ajustada_expr(COL_TOTAL_NETA in df.columns).alias("CantidadAjustada"),
         pl.lit("Frontera").alias("Fuente"),
     ).select([
         pl.col("producto").alias("Producto"),

@@ -6,10 +6,12 @@
 - ProveedorLT: mínimo alfabético de razón social en el seguimiento filtrado por
   motivo, con jerarquía suc → global → (sin filtro de motivo).
 - Lead Time Dias: LT del par (proveedor, sucursal) si hay muestra, si no el LT
-  global del proveedor, si no fallback 8.
+  global del proveedor, si no `P.LT_FALLBACK_DIAS` (3 desde ago-2026, antes 8).
+  A todos se les suma el dia de gestion de Abastecimiento.
 - LT CD a Sucursal: 1 día RM / 2 resto, con casos especiales.
-- Abastece CD: importado O (clase local C/D + agregada A/B); en la fila CD, solo
-  si es importado.
+- Abastece CD: importado O (clase local D + A/B en la agregada de las sucursales
+  D); en la fila CD, solo si es importado. Antes era "C/D local + agregada A/B"
+  sobre todas las sucursales (cambio de Abastecimiento, ago-2026).
 - LT Efectivo: LT CD si se abastece del CD, si no el LT del proveedor.
 """
 from __future__ import annotations
@@ -19,22 +21,65 @@ import polars as pl
 from . import parametros as P
 
 
-def _proveedor_lt(abc: pl.DataFrame, seg: pl.DataFrame) -> pl.DataFrame:
-    """MIN(razón social) con jerarquía suc/global, filtrado y sin filtrar motivo."""
-    con_prov = seg.filter(pl.col("RazonSocial").is_not_null())
-    filtrado = con_prov.filter(
-        (pl.col("Origen") != P.ORIGEN_CURIFOR_NACIONAL) | (pl.col("Motivo").str.to_lowercase() == P.MOTIVO_REPOSICION)
+def _con_proveedor(seg: pl.DataFrame) -> pl.DataFrame:
+    """Las OC que traen razón social: lo único de donde sale un proveedor."""
+    return seg.filter(pl.col("RazonSocial").is_not_null())
+
+
+def _solo_reposicion(df: pl.DataFrame) -> pl.DataFrame:
+    """Descarta las compras nacionales que no son de reposición.
+
+    Una OC de garantía o de un pedido puntual dice a quién se le compró esa vez,
+    no a quién se le repone. El importado y Frontera no se filtran porque su
+    motivo no viene informado.
+    """
+    return df.filter(
+        (pl.col("Origen") != P.ORIGEN_CURIFOR_NACIONAL)
+        | (pl.col("Motivo").str.to_lowercase() == P.MOTIVO_REPOSICION)
     )
 
-    def _min_por(df, keys, nombre):
-        # MIN de DAX sobre texto es case-insensitive; el min() de polars ordena
-        # por bytes (mayúsculas < minúsculas). Ordenar por clave en minúscula.
-        return df.group_by(keys).agg(
-            pl.col("RazonSocial")
-            .sort_by(pl.col("RazonSocial").str.to_lowercase())
-            .first()
-            .alias(nombre)
-        )
+
+def _min_por(df: pl.DataFrame, keys: list[str], nombre: str) -> pl.DataFrame:
+    # MIN de DAX sobre texto es case-insensitive; el min() de polars ordena
+    # por bytes (mayúsculas < minúsculas). Ordenar por clave en minúscula.
+    return df.group_by(keys).agg(
+        pl.col("RazonSocial")
+        .sort_by(pl.col("RazonSocial").str.to_lowercase())
+        .first()
+        .alias(nombre)
+    )
+
+
+def proveedor_por_producto(seg: pl.DataFrame) -> pl.DataFrame:
+    """A quién se le compra cada producto, sin mirar la sucursal.
+
+    Es el escalón GLOBAL de la misma jerarquía que usa `_proveedor_lt`: primero
+    con el filtro de motivo, y si ahí no hay nada, sin filtrarlo. Se comparte el
+    código a propósito — si las dos reglas se separaran, la plataforma mostraría
+    un proveedor y el sugerido otro para el mismo repuesto.
+
+    Se calcula sobre TODO el seguimiento, no sobre los pares del sugerido: sirve
+    para las filas que el motor no evalúa (mínimo InStock, sugerencias manuales),
+    que salían sin proveedor aunque el producto tuviera decenas de OC.
+
+    Devuelve `Producto`, `proveedor`.
+    """
+    con_prov = _con_proveedor(seg)
+    if con_prov.is_empty():
+        return pl.DataFrame(schema={"Producto": pl.Utf8, "proveedor": pl.Utf8})
+    return (
+        _min_por(con_prov, ["Producto"], "provFull")
+        .join(_min_por(_solo_reposicion(con_prov), ["Producto"], "provRepo"),
+              on="Producto", how="left")
+        .with_columns(pl.coalesce("provRepo", "provFull").alias("proveedor"))
+        .select(["Producto", "proveedor"])
+    )
+
+
+def _proveedor_lt(abc: pl.DataFrame, seg: pl.DataFrame) -> pl.DataFrame:
+    """MIN(razón social) con jerarquía suc/global, filtrado y sin filtrar motivo."""
+    con_prov = _con_proveedor(seg)
+    filtrado = _solo_reposicion(con_prov)
 
     combos = abc.select(["producto_master", "sucursal_final"])
     r = (
@@ -56,10 +101,8 @@ def _proveedor_lt(abc: pl.DataFrame, seg: pl.DataFrame) -> pl.DataFrame:
 
 def _proveedor_oc_reciente(abc: pl.DataFrame, seg: pl.DataFrame) -> pl.DataFrame:
     """Razón social de la OC más reciente (Fecha OC desc, N OC desc) por par."""
-    valido = seg.filter(
-        ((pl.col("Origen") != P.ORIGEN_CURIFOR_NACIONAL) | (pl.col("Motivo").str.to_lowercase() == P.MOTIVO_REPOSICION))
-        & pl.col("RazonSocial").is_not_null()
-        & pl.col("FechaOC").is_not_null()
+    valido = _solo_reposicion(_con_proveedor(seg)).filter(
+        pl.col("FechaOC").is_not_null()
     ).with_columns(pl.col("NOC").fill_null(-1))
     # OC más reciente por par: ordenar dentro del grupo (Fecha OC desc, N OC desc).
     reciente = valido.group_by(["Producto", "SucursalID"]).agg(
@@ -80,7 +123,8 @@ def calcular_lead_time(
     importados: list[str],
 ) -> pl.DataFrame:
     local = ["producto_master", "sucursal_final"]
-    r = abc.select([*local, "clasificacion_abc", "clasificacion_abc_agregada"])
+    r = abc.select([*local, "clasificacion_abc", "clasificacion_abc_agregada",
+                    "clasificacion_abc_agregada_d"])
     r = r.join(_proveedor_lt(abc, seguimiento), on=local, how="left")
     r = r.join(_proveedor_oc_reciente(abc, seguimiento), on=local, how="left")
 
@@ -102,16 +146,24 @@ def calcular_lead_time(
     ).join(ltg, left_on="proveedor_lt", right_on="Razon Social Proveedor", how="left")
 
     lt = pl.coalesce("lt_spec", "lt_global")
+    # Se suma la gestion de Abastecimiento: el LT medido va de la fecha de la OC a
+    # la recepcion, asi que el tramo previo -revisar el sugerido, decidir, emitir la
+    # orden- no estaba en ninguna parte y el modelo asumia que la OC sale el mismo
+    # dia que aparece la necesidad. Va tambien sobre el fallback: cuando no hay
+    # historial el proveedor se desconoce, pero la gestion ocurre igual.
+    gestion = float(P.LT_GESTION_ABASTECIMIENTO_DIAS)
     r = r.with_columns(
         pl.when(lt.is_null() | pl.col("proveedor_lt").is_null())
-        .then(pl.lit(float(P.LT_FALLBACK_DIAS)))
-        .otherwise(lt)
+        .then(pl.lit(float(P.LT_FALLBACK_DIAS) + gestion))
+        .otherwise(lt + gestion)
         .alias("lead_time_dias"),
         pl.when(pl.col("lt_spec").is_not_null())
         .then(pl.lit("Por sucursal"))
         .when(pl.col("lt_global").is_not_null() & pl.col("proveedor_lt").is_not_null())
         .then(pl.lit("Global proveedor"))
-        .otherwise(pl.lit("Fallback 8 dias"))
+        # El texto lleva el numero del parametro: tenerlo escrito a mano hacia que
+        # dijera "Fallback 8 dias" al lado de una columna que mostraba otra cifra.
+        .otherwise(pl.lit(f"Fallback {int(P.LT_FALLBACK_DIAS)} dias"))
         .alias("lt_origen"),
     )
 
@@ -132,13 +184,34 @@ def calcular_lead_time(
     # Abastece CD.
     es_imp = pl.col("producto_master").is_in(importados)
     r = r.with_columns(es_imp.alias("es_importado"))
+    # Centralizacion: el CD abastece a la sucursal en vez de que ella compre.
+    #
+    # Antes: clase local C o D + agregada A/B (sobre TODAS las sucursales). El
+    # problema es que la agregada normal la levanta la sucursal que ya vende bien:
+    # un repuesto que se mueve en Linderos sale A a nivel nacional y arrastraba a
+    # centralizacion a todas las demas, aunque entre ellas casi no se vendiera.
+    #
+    # Desde ago-2026 (Abastecimiento): solo clase local D, y la agregada se cuenta
+    # SOLO sobre las sucursales donde el producto es D. Asi lo que decide si vale
+    # la pena centralizar es cuanto suman las que lo piden poco, no la que ya lo
+    # vende sola. La C sale de la regla: una sucursal con rotacion C compra directo.
+    #
+    # OJO: `clasificacion_abc.calcular_abc` crea las filas sinteticas del CD con
+    # ESTA misma condicion. Si cambia una hay que cambiar la otra, o el CD queda
+    # con filas que nadie abastece.
     r = r.with_columns(
         pl.when(pl.col("sucursal_final") == P.CD_ID)
         .then(pl.when(pl.col("es_importado")).then(pl.lit("Si")).otherwise(pl.lit("No")))
         .otherwise(
             pl.when(
                 pl.col("es_importado")
-                | (pl.col("clasificacion_abc").is_in(["C", "D"]) & pl.col("clasificacion_abc_agregada").is_in(["A", "B"]))
+                | (
+                    pl.col("clasificacion_abc").is_in(list(P.CENTRALIZACION_CLASES_LOCALES))
+                    & pl.col(
+                        "clasificacion_abc_agregada_d" if P.CENTRALIZACION_AGREGADA_SOLO_D
+                        else "clasificacion_abc_agregada"
+                    ).is_in(["A", "B"])
+                )
             ).then(pl.lit("Si")).otherwise(pl.lit("No"))
         )
         .alias("abastece_cd")

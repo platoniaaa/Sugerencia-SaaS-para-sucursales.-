@@ -56,3 +56,7 @@ apps/web/scripts/*.png
 
 lista productos.csv
 logs/
+# Candado del agente del boton "Actualizar ahora" (scripts/agente_actualizacion.ps1)
+.agente.lock
+# Candado del acceso "Actualizar plataforma" (scripts/actualizar_plataforma.ps1)
+.actualizar_plataforma.lock

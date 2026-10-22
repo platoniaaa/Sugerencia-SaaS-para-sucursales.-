@@ -14,6 +14,9 @@ se corre con `--oficial`, y ahi el mismo CSV entra por el endpoint de carga.
 
 Configuracion (por entorno, nunca en el repo):
     MOTOR_CRUDOS_DIR      carpeta con los Excel (la biblioteca de SharePoint sincronizada)
+    MOTOR_STOCK_DIR       carpeta(s) que se leen SOLO para el stock (Data BI/Datos de SharePoint)
+    MOTOR_FUENTES=env     ignora la configuracion de Fuentes de datos de la plataforma
+    MOTOR_CARPETA_<CLAVE> ruta de una carpeta de Fuentes de datos en este PC (emergencia)
     MOTOR_SNAPSHOT_DIR    CSV congelados de las tablas chicas y estables
     PLATAFORMA_API_URL    URL del backend
     PLATAFORMA_EMAIL      credenciales de un usuario admin de la plataforma
@@ -24,7 +27,9 @@ from __future__ import annotations
 import argparse
 import os
 import sys
-from datetime import date
+import time
+import datetime as dt
+from datetime import date, timedelta
 from pathlib import Path
 
 # El proxy corporativo intercepta el HTTPS con su propio certificado. truststore
@@ -43,12 +48,32 @@ _API_DIR = Path(__file__).resolve().parents[2]
 # Tener aqui una copia de esa logica hacia que el job leyera el stock y el
 # seguimiento de la carpeta buena y las VENTAS de la copia vieja de data/crudos.
 from ..motor import fuentes as _fuentes  # noqa: E402
+from ..motor import config_fuentes as _cf  # noqa: E402
 
 CRUDOS_DIR = _fuentes.CRUDOS_DIR
 SNAPSHOT_DIR = Path(os.environ.get("MOTOR_SNAPSHOT_DIR", _API_DIR / "data" / "paridad"))
 SALIDA = _API_DIR / "data" / "sugerido_motor.csv"
 SALIDA_LT = _API_DIR / "data" / "lead_time_motor.csv"
 SALIDA_STOCK = _API_DIR / "data" / "stock_unificado_motor.csv"
+SALIDA_TRANSITO = _API_DIR / "data" / "stock_transito_motor.csv"
+SALIDA_OC = _API_DIR / "data" / "oc_recientes_motor.csv"
+# Cuantos dias de OC se mandan a la plataforma para cerrar las sugerencias de una
+# sola vez ya compradas. Cubre de sobra el plazo mas largo del modal (30 dias).
+DIAS_OC_RECIENTES = 90
+SALIDA_COSTOS = _API_DIR / "data" / "costos_precios_motor.csv"
+SALIDA_COMPRAS = _API_DIR / "data" / "compras_precios_motor.csv"
+# Cuando se publico por ultima vez el export del ERP (mtime del archivo). Son
+# 410 mil filas en 80 lotes: se manda solo cuando el archivo cambio.
+MARCA_LISTA_ERP = _API_DIR / "data" / "lista_erp_publicada.txt"
+MARCA_STOCK_PRECIOS = _API_DIR / "data" / "stock_precios_publicado.txt"
+# Candado: una sola corrida a la vez en este PC.
+#
+# El lunes 14-09-2026 corrieron tres motores en media hora: el que lanza la
+# tarea semanal de vigentes FORD al terminar (09:26), la tarea diaria (09:30) y
+# una manual (09:40). Dos motores a la vez no caben en memoria -Polars se cayo
+# con "memory allocation of 682183424 bytes failed"- y la corrida que muere a
+# mitad deja la plataforma con unas tablas nuevas y otras viejas.
+CANDADO = _API_DIR / "data" / "motor.lock"
 
 
 def _leer_env() -> dict[str, str]:
@@ -57,7 +82,8 @@ def _leer_env() -> dict[str, str]:
     if not env.exists():
         return {}
     valores = {}
-    for linea in env.read_text(encoding="utf-8", errors="ignore").splitlines():
+    # utf-8-sig: el .env de este PC parte con BOM (ver `fuentes._valor_env`).
+    for linea in env.read_text(encoding="utf-8-sig", errors="ignore").splitlines():
         linea = linea.strip()
         if linea.startswith("PLATAFORMA_") and "=" in linea:
             k, v = linea.split("=", 1)
@@ -75,6 +101,53 @@ def _credenciales() -> tuple[str, str | None, str | None]:
     )
 
 
+# El token de la corrida. Cada paso de publicacion hacia su propio login -14 por
+# corrida, mas uno por cada lote del feed del ERP-, y el 21-09-2026 Render
+# devolvio 429 (Too Many Requests) al login despues de un 502: desde ahi
+# fallaron InStock, compras y el recalculo, y ni la incidencia se pudo dejar.
+# Ahora se entra una vez y se reutiliza. Todo reintento llama antes a
+# `olvidar_token()` y entra de nuevo: si la plataforma se reinicio (un deploy o
+# una caida), la sesion de antes ya no vale y responde 401.
+_TOKEN: dict[str, str | None] = {"valor": None}
+
+
+class LlamadaRealDesdeUnTest(BaseException):
+    """Un test intento entrar a la plataforma de verdad.
+
+    Paso el 07-10-2026: un test corria la secuencia completa con los pasos de
+    publicacion apagados uno por uno, y el paso nuevo de altas desde el stock no
+    estaba en la lista. Publico 316 productos en produccion y el test paso en
+    verde. Es BaseException a proposito: los pasos atrapan Exception para anotar
+    el fallo y seguir, y con eso el test no se habria caido nunca.
+    """
+
+
+def _es_cliente_de_verdad(c) -> bool:
+    # Por el modulo de la clase y no con isinstance: hay tests que reemplazan
+    # `httpx.Client` por una funcion, y ahi isinstance revienta.
+    return type(c).__module__.split(".")[0] == "httpx"
+
+
+def _token(c, base: str, email: str, password: str, *, renovar: bool = False) -> str:
+    # Toda llamada autenticada pasa por aca: es el unico lugar donde hace falta
+    # cerrar la puerta. Los tests usan clientes falsos y por eso no les afecta.
+    if os.environ.get("PYTEST_CURRENT_TEST") and _es_cliente_de_verdad(c):
+        raise LlamadaRealDesdeUnTest(
+            f"Un test intento entrar a {base}. Apaga ese paso en el test: la "
+            "plataforma de verdad no se toca desde la suite.")
+    if renovar or not _TOKEN["valor"]:
+        r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
+        r.raise_for_status()
+        _TOKEN["valor"] = r.json()["token"]
+    return _TOKEN["valor"]
+
+
+def olvidar_token() -> None:
+    """Para los tests y para `publicar_con_reintentos`, que renueva la sesion
+    antes de reintentar un paso caido."""
+    _TOKEN["valor"] = None
+
+
 def obtener_config() -> dict | None:
     """Pide a la plataforma la configuracion calibrable del modelo.
 
@@ -89,9 +162,7 @@ def obtener_config() -> dict | None:
         return None
     try:
         with httpx.Client(timeout=60) as c:
-            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
-            r.raise_for_status()
-            token = r.json()["token"]
+            token = _token(c, base, email, password)
             r = c.get(f"{base}/api/admin/config-modelo", headers={"Authorization": f"Bearer {token}"})
             r.raise_for_status()
             return r.json()
@@ -173,6 +244,11 @@ def _buscar(fuente: str, obligatorio: bool = True) -> Path | None:
         return None
 
 
+# Archivos de la carpeta de crudos que se descartaron por no tener la forma
+# esperada. Se informan como advertencia, no como fallo.
+_AVISOS_FUENTES: list[str] = []
+
+
 def _archivos_de_ventas(fin_mes_cerrado: date) -> list[Path]:
     """Respaldos de venta que cubren la ventana de 12 meses que usa el motor.
 
@@ -180,18 +256,30 @@ def _archivos_de_ventas(fin_mes_cerrado: date) -> list[Path]:
     el sugerido solo mira los 12 meses cerrados: para jul-2026 alcanzan 2026 y
     2025. Cargar 2018-2024 ademas seria minutos de lectura para nada.
     """
-    anios = {str(fin_mes_cerrado.year), str(fin_mes_cerrado.year - 1)}
-    if not CRUDOS_DIR.exists():
-        return []
     # Los respaldos se identifican POR DESCARTE: se llaman "2025 (4).xlsx" y no hay
     # patron que los reconozca, pero si se sabe que no son stock, ni seguimiento, ni
     # el mix, ni las ventas de Frontera (que tienen otro esquema y otros filtros).
-    return sorted(
-        p for p in CRUDOS_DIR.rglob("*.xlsx")
-        if not p.name.startswith("~$")
-        and not _fuentes.es_de_alguna_fuente(p.name, excepto="ventas")
-        and any(a in p.name for a in anios)
-    )
+    # La seleccion vive en `config_fuentes.seleccion_de_ventas`, la misma que usa
+    # la configuracion de la plataforma.
+    #
+    # Con un manifiesto fijado se devuelve lo que se eligio al partir: se resuelve
+    # una sola vez por corrida, y los dos llamadores leen las mismas copias.
+    m = _fuentes.manifiesto_fijado()
+    if m is not None and m.cubre("ventas"):
+        ventas, descartados = m.ventas()
+    else:
+        ventas, rechazados = _cf.seleccion_de_ventas([(CRUDOS_DIR, True)], fin_mes_cerrado)
+        descartados = [p.name for p in rechazados]
+    # El descarte va ACA y no en el llamador: esta funcion la usan `construir_csv`
+    # y `publicar_ventas_historicas`, y filtrar en uno solo dejaba al otro roto.
+    # Paso el 08-09-2026: el sugerido publico bien y la carga de ventas se cayo
+    # con el mismo archivo.
+    for nombre in descartados:
+        aviso = (f"'{nombre}' esta en la carpeta de crudos pero no tiene forma de "
+                 "respaldo de venta: se ignoro. Si SI lo es, cambio de formato.")
+        if aviso not in _AVISOS_FUENTES:
+            _AVISOS_FUENTES.append(aviso)
+    return ventas
 
 
 def construir_csv(hoy: date | None = None) -> Path:
@@ -205,6 +293,9 @@ def construir_csv(hoy: date | None = None) -> Path:
     if cfg:
         aplicar_config(cfg)
     ventas = _archivos_de_ventas(_fin_mes_cerrado(hoy))
+    print(f"  respaldos de venta: {[p.name for p in ventas] or '(ninguno)'}")
+    for aviso in _AVISOS_FUENTES:
+        print(f"  DESCARTADO: {aviso}")
     # Ventas Frontera (E07): opcional, pero sin ellas el motor pierde los combos
     # que solo se venden ahi y subestima la demanda de los que venden en las dos.
     frontera_xlsx = _buscar("ventas_frontera", obligatorio=False)
@@ -228,8 +319,16 @@ def construir_csv(hoy: date | None = None) -> Path:
         # Opcionales; sin ellas esas columnas salen vacias y el resto no cambia.
         precios_ford_xlsx=_buscar("precios_ford", obligatorio=False),
         precios_gildemeister_xlsx=_buscar("precios_gildemeister", obligatorio=False),
+        # Vigentes de FORD consultados en vivo (proyecto WINGS). Este SI mueve el
+        # sugerido: trae los codigos descontinuados que la lista de precios no tiene.
+        # Opcional: sin el archivo, los reemplazos salen solo de la lista de precios,
+        # que es como funcionaba hasta ago-2026.
+        vigentes_ford_xlsx=_buscar("vigentes_ford", obligatorio=False),
+        # Solo para el COSTO de los productos que no estan en el Excel de stock.
+        lista_erp_xlsx=_buscar("lista_erp", obligatorio=False),
         fin_mes_cerrado=_fin_mes_cerrado(hoy),
     )
+    avisar_lista_ford_vieja(hoy)
     df = pipeline.ejecutar(fuentes, fin_mes_cerrado=_fin_mes_cerrado(hoy), hoy=hoy)
     SALIDA.parent.mkdir(parents=True, exist_ok=True)
     # El lead time calculado se guarda aparte para publicarlo a la plataforma: es
@@ -239,6 +338,15 @@ def construir_csv(hoy: date | None = None) -> Path:
     # El stock por bodega: la plataforma lo muestra en la ficha del catalogo. Antes
     # esa tabla la llenaba el Power BI Desktop y al retirarlo quedo congelada.
     _guardar_stock_unificado(fuentes)
+    _guardar_costos_precios(fuentes)
+    _guardar_compras_precios()
+    # El transito de TODOS los productos, no solo de los que el sugerido evalua.
+    _guardar_transito(fuentes)
+    # Las OC recientes, para cerrar en la plataforma lo de una sola vez ya comprado.
+    _guardar_oc_recientes(fuentes)
+    # Las fuentes quedan a mano para que `run` publique la equivalencia de SKU
+    # sin volver a leer los Excel (son minutos de lectura).
+    globals()['_ULTIMAS_FUENTES'] = fuentes
     return pipeline.exportar_csv(df, SALIDA)
 
 
@@ -267,6 +375,280 @@ def _guardar_stock_unificado(fuentes: dict) -> Path | None:
     return SALIDA_STOCK
 
 
+def _guardar_transito(fuentes: dict) -> Path | None:
+    """Escribe el transito vigente por (producto, sucursal) de TODO el seguimiento.
+
+    El sugerido ya calcula este numero, pero solo lo publica pegado a sus propias
+    filas (`sugerido.stock_en_transito_suc`), y el sugerido es un subconjunto chico
+    del catalogo: 1.936 filas para Linderos de 409K productos. Cuando un vendedor
+    pide un repuesto que no esta en el sugerido -que es el caso normal, porque pide
+    justo lo que no se stockea-, el comprador no tenia forma de saber si ya venia
+    en camino, y podia comprar de nuevo algo que ya estaba pedido.
+
+    Se usa la MISMA funcion del motor (`_stock_transito`) a proposito: si aqui se
+    reimplementara el filtro de "OC vigente", la plataforma mostraria un numero y
+    el sugerido otro, y no habria forma de saber cual creer.
+    """
+    from datetime import date as _date
+
+    import polars as pl
+
+    from ..motor.conectores.sql_flexline import ORIGEN_FRONTERA
+    from ..motor.sugerido import _stock_transito
+
+    seg = fuentes.get("seguimiento_transito")
+    if seg is None or seg.is_empty():
+        return None
+    # Cada fila sale con su empresa: la lista de precios es de Curifor y solo
+    # cuenta su transito (07-10-2026); el sugerido sigue usando los dos. Se
+    # calcula por separado con la misma funcion, asi que la suma por producto es
+    # la misma de antes.
+    es_frontera = pl.col("Origen").fill_null("").eq(ORIGEN_FRONTERA)
+    partes = []
+    for origen, filtro in (("CURIFOR", ~es_frontera), ("FRONTERA", es_frontera)):
+        sub = seg.filter(filtro)
+        if sub.is_empty():
+            continue
+        df = _stock_transito(sub, _date.today(), con_fecha=True)
+        if not df.is_empty():
+            partes.append(df.with_columns(pl.lit(origen).alias("origen")))
+    if not partes:
+        return None
+    pl.concat(partes, how="vertical_relaxed").rename(
+        {"producto_master": "producto", "sucursal_final": "sucursal_id",
+         "stock_transito": "cantidad"}
+    ).write_csv(SALIDA_TRANSITO)
+    return SALIDA_TRANSITO
+
+
+def _guardar_oc_recientes(fuentes: dict, hoy=None) -> Path | None:
+    """Escribe las OC de los ultimos `DIAS_OC_RECIENTES` dias, una fila por OC.
+
+    La plataforma las usa para cerrar las sugerencias manuales de una sola vez que
+    ya se compraron (08-10-2026). Nadie aprieta "Marcar como pedido": sin esto, lo
+    de una sola vez seguia sumando despues de comprado y la descarga siguiente lo
+    volvia a pedir.
+
+    Van TODAS las OC, de cualquier motivo y estado: los pedidos especiales se
+    compran como "compra calzada", que el transito no cuenta, y una OC ya recibida
+    tambien es una compra. Quedan fuera las anuladas y las que no dicen sucursal
+    (las de importacion vienen sin ella): sin sucursal no hay con que comparar.
+    """
+    from datetime import date as _date, timedelta as _timedelta
+
+    import polars as pl
+
+    from ..motor.conectores.sql_flexline import SUCURSAL_ID_DEFAULT
+
+    seg = fuentes.get("seguimiento_transito")
+    if seg is None or seg.is_empty():
+        return None
+    hoy = hoy or _date.today()
+    desde = hoy - _timedelta(days=DIAS_OC_RECIENTES)
+    estado = pl.col("EstadoOC").fill_null("").str.to_lowercase()
+    df = (
+        seg.filter(
+            pl.col("FechaOC").is_not_null()
+            & (pl.col("FechaOC") >= desde)
+            & pl.col("Producto").is_not_null()
+            & pl.col("NOC").is_not_null()
+            & pl.col("SucursalID").is_not_null()
+            & (pl.col("SucursalID") != SUCURSAL_ID_DEFAULT)
+            & (pl.col("Cantidad").fill_null(0) > 0)
+            & ~estado.str.contains("anul")
+        )
+        .with_columns(pl.col("Producto").str.strip_chars())
+        .group_by(["Producto", "SucursalID", "NOC", "FechaOC"])
+        .agg(
+            pl.col("Cantidad").cast(pl.Float64).sum().alias("cantidad"),
+            pl.col("Motivo").first().alias("motivo"),
+            pl.col("Origen").first().alias("origen"),
+        )
+        .rename({"Producto": "producto", "SucursalID": "sucursal_id",
+                 "NOC": "n_oc", "FechaOC": "fecha_oc"})
+        .sort(["fecha_oc", "n_oc", "producto"])
+    )
+    if df.is_empty():
+        return None
+    SALIDA_OC.parent.mkdir(parents=True, exist_ok=True)
+    df.write_csv(SALIDA_OC)
+    return SALIDA_OC
+
+
+def publicar_oc_recientes() -> dict | None:
+    """Manda las OC recientes; la plataforma cierra lo de una sola vez ya comprado."""
+    import csv
+
+    import httpx
+
+    if not SALIDA_OC.exists():
+        return None
+    base, email, password = _credenciales()
+    if not email or not password:
+        return None
+    with open(SALIDA_OC, encoding="utf-8", newline="") as f:
+        filas = [
+            {
+                "producto": r["producto"],
+                "sucursal_id": r["sucursal_id"],
+                "n_oc": r["n_oc"],
+                "fecha_oc": (r.get("fecha_oc") or "")[:10],
+                "cantidad": float(r["cantidad"]),
+                "motivo": r.get("motivo") or None,
+                "origen": r.get("origen") or None,
+            }
+            for r in csv.DictReader(f)
+            if r.get("producto") and r.get("cantidad")
+        ]
+    try:
+        with httpx.Client(timeout=300) as c:
+            token = _token(c, base, email, password)
+            r = c.post(
+                f"{base}/api/admin/oc-recientes",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"filas": filas},
+            )
+            if r.status_code == 404:
+                # Plataforma sin el endpoint desplegado todavia: no es un fallo.
+                return None
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:  # noqa: BLE001 - publicar las OC nunca debe romper la carga
+        fallo_publicacion("las OC recientes", e)
+        return None
+
+
+def publicar_transito() -> dict | None:
+    """Sube a la plataforma el transito vigente (reemplaza la foto anterior)."""
+    import csv
+
+    import httpx
+
+    if not SALIDA_TRANSITO.exists():
+        return None
+    base, email, password = _credenciales()
+    if not email or not password:
+        return None
+    with open(SALIDA_TRANSITO, encoding="utf-8", newline="") as f:
+        filas = [
+            {
+                "producto": r["producto"],
+                "sucursal_id": r["sucursal_id"] or None,
+                "cantidad": float(r["cantidad"]),
+                "pedido_desde": (r.get("pedido_desde") or "")[:10] or None,
+                "origen": r.get("origen") or None,
+            }
+            for r in csv.DictReader(f)
+            if r.get("producto") and r.get("cantidad")
+        ]
+    try:
+        with httpx.Client(timeout=300) as c:
+            token = _token(c, base, email, password)
+            r = c.post(
+                f"{base}/api/admin/stock-transito",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"filas": filas},
+            )
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:  # noqa: BLE001 - publicar el transito nunca debe romper la carga
+        fallo_publicacion("el transito", e)
+        return None
+
+
+def publicar_ventas_historicas() -> dict | None:
+    """Sube a la plataforma los MESES DE VENTA que le faltan.
+
+    Esta tabla la usa la plataforma para la columna "Venta 12m", el grafico de
+    consumo del requerimiento y la pantalla de Ventas historicas. Hasta ahora se
+    cargaba con un job manual conectado directo a la base: el mes que se pegaba en
+    el respaldo de Ventas no llegaba nunca, y esas vistas se quedaban atras sin
+    avisar a nadie. Paso con julio-2026.
+
+    Se publica SOLO lo que falta: se le pregunta a la plataforma hasta que periodo
+    tiene y se suben los posteriores. En un dia normal no sube nada; cuando se
+    pega un mes nuevo, sube ese mes.
+
+    La sucursal va NORMALIZADA ("08 TALCA" -> "TALCA"), igual que hace el motor
+    para sus propios calculos. El job manual copiaba la celda cruda, y por eso la
+    tabla quedo con el mismo lugar bajo dos nombres.
+    """
+    import re
+
+    import httpx
+    import polars as pl
+
+    base, email, password = _credenciales()
+    if not email or not password:
+        return None
+
+    archivos = _archivos_de_ventas(_fin_mes_cerrado(date.today()))
+    if not archivos:
+        return None
+
+    try:
+        with httpx.Client(timeout=600) as c:
+            token = _token(c, base, email, password)
+            cab = {"Authorization": f"Bearer {token}"}
+
+            r = c.get(f"{base}/api/ventas-historicas/meta", headers=cab)
+            r.raise_for_status()
+            ultimo = r.json().get("periodo_max") or "000000"
+
+            filas: list[dict] = []
+            for ruta in archivos:
+                df = pl.read_excel(
+                    ruta, columns=["Periodo", "Producto", "SUCURSAL", "Cantidad", "Total Neta"]
+                )
+                df = (
+                    df.with_columns(
+                        pl.col("Periodo").cast(pl.Utf8).str.strip_chars(),
+                        pl.col("SUCURSAL").cast(pl.Utf8)
+                        .str.strip_chars()
+                        .str.replace(r"^\d{1,2}\s+", ""),
+                        pl.col("Producto").cast(pl.Utf8).str.strip_chars(),
+                    )
+                    .filter(pl.col("Periodo") > pl.lit(ultimo))
+                    .group_by(["Periodo", "Producto", "SUCURSAL"])
+                    .agg(
+                        pl.col("Cantidad").sum().alias("cantidad"),
+                        pl.col("Total Neta").sum().alias("neto"),
+                        pl.len().alias("n_lineas"),
+                    )
+                )
+                for p, prod, suc, cant, neto, n in df.iter_rows():
+                    filas.append({
+                        "periodo": p, "producto": prod, "sucursal": suc,
+                        "cantidad": cant, "neto": neto, "n_lineas": n,
+                    })
+
+            if not filas:
+                return {"filas_cargadas": 0, "periodos": [], "al_dia": True}
+
+            # Un request POR MES, y no lotes de tamano fijo: el endpoint BORRA el
+            # periodo antes de insertar, asi que partir un mes en dos requests
+            # haria que el segundo se llevara por delante lo que subio el primero.
+            # Un mes son ~15.000 filas agregadas: entra sin problema en una sola.
+            por_mes: dict[str, list[dict]] = {}
+            for f in filas:
+                por_mes.setdefault(f["periodo"], []).append(f)
+
+            cargadas, periodos = 0, []
+            for periodo in sorted(por_mes):
+                r = c.post(
+                    f"{base}/api/admin/ventas-historicas",
+                    headers=cab, json={"filas": por_mes[periodo]},
+                )
+                r.raise_for_status()
+                d = r.json()
+                cargadas += d.get("filas_cargadas", 0)
+                periodos.extend(d.get("periodos", []))
+            return {"filas_cargadas": cargadas, "periodos": periodos, "al_dia": False}
+    except Exception as e:  # noqa: BLE001 - publicar las ventas nunca debe romper la carga
+        fallo_publicacion("las ventas", e)
+        return None
+
+
 def publicar_stock_unificado() -> dict | None:
     """Sube a la plataforma el stock por bodega (reemplaza la foto vigente)."""
     import csv
@@ -292,9 +674,7 @@ def publicar_stock_unificado() -> dict | None:
         ]
     try:
         with httpx.Client(timeout=300) as c:
-            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
-            r.raise_for_status()
-            token = r.json()["token"]
+            token = _token(c, base, email, password)
             r = c.post(
                 f"{base}/api/admin/stock-unificado",
                 headers={"Authorization": f"Bearer {token}"},
@@ -303,7 +683,332 @@ def publicar_stock_unificado() -> dict | None:
             r.raise_for_status()
             return r.json()
     except Exception as e:  # noqa: BLE001 - publicar el stock nunca debe romper la carga
-        print(f"  (no se pudo publicar el stock: {e})")
+        fallo_publicacion("el stock", e)
+        return None
+
+
+def filas_de_reemplazos(reem, por_clave: dict[str, str], grupo: dict[str, str]) -> list[dict]:
+    """Arma las filas que la plataforma va a guardar, sin tocar la red.
+
+    Separada de `publicar_reemplazos` para poder probarla: lo delicado aca no es
+    el POST sino decidir quien queda avisado y quien queda agrupado.
+
+    `por_clave`: clave_precio -> codigo de Curifor (del maestro completo).
+    `grupo`: codigo -> master, o sea que junto el motor de verdad.
+    """
+    filas: list[dict] = []
+    # (viejo, vigente, sku FORD del vigente, cuando se extrajo). Se resuelven
+    # despues del bucle, cuando ya se sabe cuales tienen fila propia.
+    candidatos: list[tuple[str, str, str | None, str | None]] = []
+    for f in reem.iter_rows(named=True):
+        yo = por_clave.get(f["clave_precio"])
+        if not yo:
+            continue
+        vigente = por_clave.get(f["clave_vigente"]) if f["clave_vigente"] else None
+        viejos = [por_clave[k] for k in (f["reemplaza_a"] or []) if k in por_clave]
+        viejos = [v for v in viejos if v != yo]
+        if not vigente and not f["sku_vigente"] and not viejos:
+            continue
+        # Agrupado = el motor los dejo bajo el mismo master. Se mira contra el
+        # vigente si lo hay, y si no contra el primero de los que esta pieza
+        # reemplazo: en las dos direcciones el grupo es el mismo.
+        otro = vigente or (viejos[0] if viejos else None)
+        agrupado = bool(
+            otro and yo in grupo and otro in grupo and grupo[yo] == grupo[otro]
+        )
+        filas.append({
+            "producto": yo,
+            "reemplazado_por": vigente,
+            "reemplazado_por_ford": f["sku_vigente"],
+            "cadena": f["cadena"],
+            "reemplaza_a": viejos,
+            "sucesor_confirmado": bool(f["sucesor_confirmado"]),
+            "agrupado": agrupado,
+            "aviso": f["aviso"],
+            # Cuando se consulto el portal por esta fila. Sin esto la plataforma
+            # muestra un reemplazo de hace tres semanas con la misma cara que uno
+            # de hoy, y si la corrida semanal falla nadie tiene como notarlo.
+            "extraido_en": f["extraido_en"],
+        })
+        candidatos.extend((v, yo, f["sku_ford"], f["extraido_en"]) for v in viejos)
+
+    # Los codigos que ESTA pieza reemplazo viven dentro de su `reemplaza_a`, y la
+    # mayoria no trae fila propia: de 4.364 nombrados, 3.864 no aparecen en el
+    # archivo de FORD con su propio numero de parte (FORD solo devuelve la ficha
+    # del codigo que se le consulto). Sin fila propia la plataforma no tiene donde
+    # mirar, y pasan dos cosas malas:
+    #
+    #   - el autocomplete no avisa que el codigo esta dado de baja. Son 3.713
+    #     codigos, entre ellos `20 XO5W30Q1FS`, que vende 761 al ano.
+    #   - la ficha del grupo los deja FUERA del total, porque `cuenta_en_el_total`
+    #     mira el `agrupado` de la fila del codigo y no encuentra ninguna. Eran 602
+    #     fichas mostrando un total que no cuadraba con el sugerido, que es justo
+    #     lo que `agrupado` existe para evitar.
+    #
+    # La direccion inversa es un dato de FORD tan valido como la directa: si el
+    # portal dice que `yo` reemplaza a `viejo`, entonces `viejo` esta dado de baja
+    # y su vigente es `yo`. Lo que NO se inventa es la cadena: el camino completo
+    # ("A > B > C") solo lo da el portal para el codigo consultado, asi que estas
+    # filas van sin `cadena` en vez de con una armada a mano.
+    #
+    # Ordenado y con `ya`: un mismo codigo viejo puede estar nombrado por dos
+    # vigentes distintos, y la plataforma no tiene clave unica por producto -si se
+    # colaran dos filas del mismo codigo, `por_producto` se quedaria con
+    # cualquiera de las dos. Gana el primero por orden alfabetico, siempre igual.
+    ya = {f["producto"] for f in filas}
+    for viejo, yo, sku_yo, extraido in sorted(candidatos, key=lambda c: (c[0], c[1])):
+        if viejo in ya:
+            continue
+        ya.add(viejo)
+        filas.append({
+            "producto": viejo,
+            "reemplazado_por": yo,
+            "reemplazado_por_ford": sku_yo,
+            "cadena": None,
+            "reemplaza_a": [],
+            # FORD nombro el sucesor y esta resuelto: es `yo`, con codigo de
+            # Curifor y de FORD. No es el caso "Sin candidato vigente".
+            "sucesor_confirmado": True,
+            "agrupado": bool(
+                viejo in grupo and yo in grupo and grupo[viejo] == grupo[yo]
+            ),
+            "aviso": None,
+            "extraido_en": extraido,
+        })
+    # El vigente de un codigo no puede ser otro que TAMBIEN esta dado de baja: la
+    # columna se llama "el codigo vigente" y con eso se compra. Al 24-08-2026 eran
+    # 140 filas de 4.230 apuntando a un intermedio de la cadena.
+    #
+    # Se resuelve siguiendo `reemplazado_por` hasta el final. Tres casos que no se
+    # pueden resolver y se dejan como estan, con una nota en el aviso:
+    #
+    #   - ciclos: `19 1S7Z6375D` y `19 1S7Z6375E` se reemplazan mutuamente;
+    #   - autorreferencia: `18 GN1Z8419AC` apuntaba a si mismo;
+    #   - el vigente final no esta en el maestro (ahi ya no hay a donde ir).
+    vigente_de = {f["producto"]: f["reemplazado_por"]
+                  for f in filas if f["reemplazado_por"]}
+
+    def _final(p: str) -> tuple[str | None, bool]:
+        """(vigente final, hubo ciclo)."""
+        visto = {p}
+        actual = vigente_de.get(p)
+        while actual:
+            if actual in visto:
+                return actual, True
+            visto.add(actual)
+            siguiente = vigente_de.get(actual)
+            if not siguiente:
+                return actual, False
+            actual = siguiente
+        return None, False
+
+    for f in filas:
+        v = f["reemplazado_por"]
+        if not v:
+            continue
+        if v == f["producto"]:
+            # Un codigo no se reemplaza a si mismo. Pasa cuando dos numeros de
+            # parte de FORD caen en la misma clave del maestro de Curifor.
+            f["reemplazado_por"] = None
+            f["aviso"] = "; ".join(x for x in [
+                f["aviso"], "FORD lo da como reemplazo de si mismo: revisar a mano"] if x)
+            continue
+        final, ciclo = _final(f["producto"])
+        if ciclo:
+            f["aviso"] = "; ".join(x for x in [
+                f["aviso"],
+                f"la cadena vuelve sobre si misma en {final}: revisar a mano"] if x)
+            continue
+        if final and final != v:
+            f["reemplazado_por"] = final
+            # El sku de FORD ya no corresponde al codigo nuevo, y prefiero dejarlo
+            # vacio antes que mostrar uno que no es el del vigente.
+            f["reemplazado_por_ford"] = None
+
+    return filas
+
+
+def publicar_reemplazos(fuentes: dict) -> dict | None:
+    """Sube la cadena de reemplazo de FORD para los codigos que Curifor tiene.
+
+    La AGRUPACION (sumar el stock del viejo con el del nuevo) ya la hizo el motor
+    al armar el mapeo. Esto es lo otro: avisarle al comprador que el codigo que le
+    pidieron esta descontinuado y cual es el vigente, incluso cuando ese par no se
+    agrupo. Por eso viaja `agrupado`, que distingue los dos casos.
+
+    Se publica solo lo que toca al maestro de Curifor: de los 39.622 codigos de la
+    lista, el resto no se puede mostrar en ninguna pantalla.
+
+    Va una fila por MIEMBRO del grupo, no una por codigo consultado a FORD: la
+    razon esta en `filas_de_reemplazos`.
+    """
+    import httpx
+
+    reem = fuentes.get("reemplazos_ford")
+    mapeo = fuentes.get("mapeo")
+    dim = fuentes.get("dim_producto")
+    if reem is None or reem.is_empty():
+        return None
+    base, email, password = _credenciales()
+    if not email or not password:
+        return None
+
+    from ..motor import lectores_excel as _lx
+    from ..motor.lectores_excel import clave_precio
+
+    # El universo es el maestro COMPLETO (409.626 codigos), no `dim_producto`
+    # (~34.000): ese trae solo lo que el motor evalua, o sea lo que tiene venta o
+    # stock. Justo al reves de lo que hace falta aca: un codigo dado de baja que
+    # no se vende ni se stockea es el perfil exacto de un codigo muerto, y es
+    # cuando mas sirve el aviso. Con dim_producto se publicaban 625 avisos en vez
+    # de ~3.200 y faltaban precisamente esos. (Para AGRUPAR si corresponde el
+    # universo chico, y por eso `ampliar_mapeo_con_ford` recibe otro conjunto.)
+    ruta_maestro = _buscar("catalogo", obligatorio=False)
+    universo = None
+    if ruta_maestro is not None:
+        try:
+            universo = _lx.leer_listado_maestro(ruta_maestro).select("Producto").unique()
+        except Exception as e:  # noqa: BLE001
+            print(f"  (no se pudo leer el maestro para los reemplazos: {e})")
+    if universo is None:
+        if dim is None:
+            return None
+        universo = dim.select("Producto").unique()
+
+    # Ordenado por la misma razon que en `ampliar_mapeo_con_ford`: 2.399 claves del
+    # maestro tienen mas de un codigo de Curifor y el `.unique()` de polars no da un
+    # orden estable. Sin esto, el aviso que ve el comprador podia nombrar un codigo
+    # distinto en cada corrida. Tiene que quedar igual que alla o el motor agrupa un
+    # codigo y la plataforma avisa de otro.
+    por_clave: dict[str, str] = {}
+    for (p,) in universo.sort("Producto").iter_rows():
+        k = clave_precio(p)
+        if k and k not in por_clave:
+            por_clave[k] = p
+    # Producto -> master, para saber si el par quedo efectivamente en un grupo.
+    grupo = (
+        dict(mapeo.select(["Producto", "Producto_Master"]).iter_rows())
+        if mapeo is not None
+        else {}
+    )
+
+    filas = filas_de_reemplazos(reem, por_clave, grupo)
+
+    if not filas:
+        return None
+
+    try:
+        with httpx.Client(timeout=300) as c:
+            token = _token(c, base, email, password)
+            r = c.post(
+                f"{base}/api/admin/reemplazos-ford",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"filas": filas},
+            )
+            r.raise_for_status()
+            out = r.json()
+            out["agrupados"] = sum(1 for f in filas if f["agrupado"])
+            return out
+    except Exception as e:  # noqa: BLE001 - publicar esto nunca debe romper la carga
+        fallo_publicacion("los reemplazos", e)
+        return None
+
+
+def publicar_sku_proveedor(fuentes: dict) -> dict | None:
+    """Sube la equivalencia codigo de Curifor -> SKU del portal del proveedor.
+
+    Ford pide su codigo con barras ("SZ6Z/3B437/B/"), que separa prefijo, basico y
+    sufijos y NO se deriva con una regla: hay que mirarlo en su lista. Antes el
+    comprador hacia esa conversion con un BUSCARV contra una tabla de 111.773
+    filas pegada en su Excel; ahora la plataforma arma el archivo del portal sola.
+
+    Se publica la lista completa (no solo lo que el sugerido pide) porque un
+    requerimiento de sucursal puede traer cualquier codigo.
+    """
+    import httpx
+
+    lista = fuentes.get("precios_ford")
+    if lista is None or lista.is_empty():
+        return None
+    base, email, password = _credenciales()
+    if not email or not password:
+        return None
+    # `clave_precio` ya dejo la clave normalizada al leer la lista; el SKU es el
+    # PartNumber original, que no se conserva. Se relee para tener los dos.
+    from ..motor import lectores_excel as lx
+
+    ruta = _buscar("precios_ford", obligatorio=False)
+    if ruta is None:
+        return None
+    import polars as pl
+
+    df = pl.read_excel(ruta, sheet_name="Precios").select("PartNumber").unique()
+    filas = []
+    for (sku,) in df.iter_rows():
+        clave = lx.clave_precio(sku)
+        if clave and sku:
+            filas.append({"clave": clave, "sku": str(sku).strip()})
+    if not filas:
+        return None
+    try:
+        with httpx.Client(timeout=300) as c:
+            token = _token(c, base, email, password)
+            r = c.post(
+                f"{base}/api/requerimiento/sku-proveedor",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"proveedor": "FORD", "filas": filas},
+            )
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:  # noqa: BLE001 - nunca debe romper la carga del sugerido
+        fallo_publicacion("la equivalencia de SKU", e)
+        return None
+
+
+def publicar_proveedor_producto(fuentes: dict) -> dict | None:
+    """Sube a quien se le compra cada producto, deducido de las OC historicas.
+
+    El proveedor ya viaja dentro del sugerido, pero solo para los pares
+    producto x sucursal que el motor evalua. Las filas que la plataforma agrega
+    despues —minimo InStock y sugerencias manuales— quedaban con la celda vacia
+    aunque el producto tuviera decenas de OC: `25 KV6Z9155D` tenia 78 ordenes a
+    FORD y salia en blanco. Y sin proveedor la linea no entra a ningun carro de
+    compra, asi que no era solo cosmetico.
+
+    Va sobre TODO el seguimiento (no sobre los pares del sugerido) justamente
+    para cubrir lo que el motor no calcula. La regla de desempate es la misma que
+    usa el sugerido: se comparte el codigo en `lead_time.proveedor_por_producto`.
+    """
+    import httpx
+
+    seg = fuentes.get("seguimiento")
+    if seg is None or seg.is_empty():
+        return None
+    base, email, password = _credenciales()
+    if not email or not password:
+        return None
+
+    from ..motor.lead_time import proveedor_por_producto
+
+    filas = [
+        {"producto": p, "proveedor": prov}
+        for p, prov in proveedor_por_producto(seg).iter_rows()
+        if p and prov
+    ]
+    if not filas:
+        return None
+    try:
+        with httpx.Client(timeout=300) as c:
+            token = _token(c, base, email, password)
+            r = c.post(
+                f"{base}/api/admin/proveedor-producto",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"filas": filas},
+            )
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:  # noqa: BLE001 - nunca debe romper la carga del sugerido
+        fallo_publicacion("el proveedor por producto", e)
         return None
 
 
@@ -335,6 +1040,311 @@ def _guardar_lead_time(fuentes: dict) -> Path | None:
     return SALIDA_LT
 
 
+
+# --------------------------------------------------------------- lista de precios
+# El modulo de precios de la plataforma calcula Precio = Costo x Factor. Necesita
+# dos cosas que solo el motor tiene: el COSTO de todos los productos (el sugerido
+# solo cubre lo que evalua) y la ULTIMA COMPRA por producto, que decide si es
+# Importado o Nacional. Las dos salen de archivos que el motor ya lee.
+
+def _guardar_costos_precios(fuentes: dict) -> Path | None:
+    """Costo por producto desde el Excel de stock de Curifor (columna Costo).
+
+    Es la unica fuente de costo para los productos de la lista de precios que el
+    sugerido no evalua: a esos `dim_producto` no los cubre.
+
+    Estuvo muerta desde que se escribio hasta el 07-10-2026, por dos razones:
+    buscaba la columna en `stock_bodegas`, que no la trae, y aunque la hubiera
+    encontrado el costo viene como texto con coma decimal ("95233,75000000") y un
+    cast a secas lo dejaba vacio. 305 productos quedaron con el costo de la carga
+    del 04-09-2026 y 13 tenian el precio corrido mas de un 50%.
+
+    Solo Curifor: la lista de precios es de Curifor y el costo de Frontera es el
+    de otra empresa. Si un producto tiene varios costos (lotes) se toma el mayor,
+    como el modelo.
+    """
+    import polars as pl
+
+    from ..motor.pipeline import _valor
+
+    df = fuentes.get("costo")
+    if df is None or df.is_empty():
+        return None
+    (
+        df.select(
+            pl.col("Producto").cast(pl.Utf8).str.strip_chars().alias("producto"),
+            _valor("Costo").alias("costo"),
+        )
+        .filter(pl.col("producto").is_not_null() & (pl.col("producto") != "")
+                & (pl.col("costo") > 0))
+        .group_by("producto").agg(pl.col("costo").max())
+        .sort("producto")
+        .write_csv(SALIDA_COSTOS)
+    )
+    return SALIDA_COSTOS
+
+
+def _guardar_compras_precios() -> Path | None:
+    """Ultima compra por producto, separando importado de nacional.
+
+    Es la regla de procedencia que pidio Abastecimiento: si la compra mas
+    reciente esta en el seguimiento de importacion es Importado, si esta en el
+    nacional es Nacional. Frontera cuenta como nacional.
+
+    Se leen los tres Excel por separado a proposito: `fuentes["seguimiento"]` ya
+    viene unido y ahi se pierde de cual archivo salio cada fila, que es
+    justamente el dato que decide.
+    """
+    import polars as pl
+
+    from ..motor import lectores_excel as lx
+
+    lecturas = (
+        ("seguimiento_curifor_importado", lx.leer_seguimiento_importado_excel, "ult_recep_importado"),
+        ("seguimiento_curifor_nacional", lx.leer_seguimiento_nacional_excel, "ult_pe_nacional"),
+        ("seguimiento_frontera", lx.leer_seguimiento_frontera_excel, "ult_pe_nacional"),
+    )
+    por_producto: dict[str, dict[str, str]] = {}
+    for fuente, leer, campo in lecturas:
+        ruta = _buscar(fuente, obligatorio=False)
+        if ruta is None:
+            continue
+        try:
+            df = leer(ruta)
+        except Exception as e:  # noqa: BLE001 - un seguimiento ilegible no frena el resto
+            print(f"    aviso: no pude leer {fuente} para la procedencia ({type(e).__name__}: {e})")
+            continue
+        if df.is_empty() or "FechaPE" not in df.columns:
+            continue
+        # FechaPE es la fecha en que la mercaderia queda disponible: recepcion en
+        # el importado y en frontera, Documento P/E en el nacional.
+        ult = (
+            df.select("Producto", "FechaPE")
+            .drop_nulls()
+            .group_by("Producto").agg(pl.col("FechaPE").max())
+        )
+        for prod, fecha in ult.iter_rows():
+            if prod is None or fecha is None:
+                continue
+            clave = str(prod).strip()
+            if not clave:
+                continue
+            actual = por_producto.setdefault(clave, {})
+            iso = fecha.isoformat()[:10]
+            # Frontera y nacional escriben el mismo campo: gana la mas reciente.
+            if iso > actual.get(campo, ""):
+                actual[campo] = iso
+    if not por_producto:
+        return None
+    filas = [{"producto": p, **v} for p, v in por_producto.items()]
+    pl.DataFrame(filas).write_csv(SALIDA_COMPRAS)
+    return SALIDA_COMPRAS
+
+
+def _publicar_json(paso: str, ruta: str, filas: list[dict]) -> dict | None:
+    """POST autenticado a un endpoint de administracion. Devuelve None si falla."""
+    import httpx
+
+    if not filas:
+        return None
+    base, email, password = _credenciales()
+    if not email or not password:
+        return None
+    try:
+        with httpx.Client(timeout=600) as c:
+            cab = {"Authorization": f"Bearer {_token(c, base, email, password)}"}
+            r = c.post(f"{base}{ruta}", headers=cab, json={"filas": filas})
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:  # noqa: BLE001 - publicar nunca debe romper la carga
+        fallo_publicacion(paso, e)
+        return None
+
+
+def publicar_costos_precios() -> dict | None:
+    """Sube el costo de todos los productos para la lista de precios."""
+    import csv
+
+    if not SALIDA_COSTOS.exists():
+        return None
+    with open(SALIDA_COSTOS, encoding="utf-8", newline="") as f:
+        filas = [{"producto": r["producto"], "costo": float(r["costo"])}
+                 for r in csv.DictReader(f) if r.get("producto")]
+    # Por lotes: la plataforma actualiza fila a fila y ~20 mil en una sola request
+    # rozan el corte de Render. Aplicar la mitad no hace dano: cada costo es
+    # independiente y manana se vuelven a mandar todos.
+    total = {"actualizados": 0, "ignorados": 0}
+    for i in range(0, len(filas), 5000):
+        r = _publicar_json("los costos de precios", "/api/admin/precios/costos",
+                           filas[i:i + 5000])
+        if r is None:
+            return None
+        for k in total:
+            total[k] += int(r.get(k) or 0)
+    return total
+
+
+def publicar_compras_precios() -> dict | None:
+    """Sube la ultima compra por producto (decide Importado / Nacional)."""
+    import csv
+
+    if not SALIDA_COMPRAS.exists():
+        return None
+    with open(SALIDA_COMPRAS, encoding="utf-8", newline="") as f:
+        filas = []
+        for r in csv.DictReader(f):
+            if not r.get("producto"):
+                continue
+            fila = {"producto": r["producto"]}
+            for campo in ("ult_recep_importado", "ult_pe_nacional"):
+                if r.get(campo):
+                    fila[campo] = r[campo]
+            if len(fila) > 1:
+                filas.append(fila)
+    return _publicar_json("las compras de precios", "/api/admin/precios/compras", filas)
+
+
+def _publicar_al_feed_erp(paso: str, ruta, marca) -> dict | None:
+    """Manda un archivo con formato del ERP a la lista de precios, por lotes, SOLO
+    si cambio desde la ultima vez (la marca guarda nombre, fecha y tamano).
+
+    Devuelve None si ya se publico este mismo o si un lote fallo -sin escribir la
+    marca, para que manana se reintente entero-; un dict con los totales si se
+    publico.
+    """
+    from ..motor import lectores_excel as _lx
+
+    huella = f"{ruta.name}|{int(ruta.stat().st_mtime)}|{ruta.stat().st_size}"
+    if marca.exists() and marca.read_text(encoding="utf-8").strip() == huella:
+        return None
+
+    df = _lx.leer_lista_erp(ruta)
+    filas = df.to_dicts()
+    total = {"recibidos": 0, "actualizados": 0, "creados": 0, "no_entran": {}, "lotes": 0}
+    LOTE = 5000
+    for i in range(0, len(filas), LOTE):
+        r = _publicar_json(paso, "/api/admin/precios/erp", filas[i:i + LOTE])
+        if r is None:
+            # Un lote caido deja la marca sin escribir: manana se reintenta entero.
+            return None
+        total["lotes"] += 1
+        for k in ("recibidos", "actualizados", "creados"):
+            total[k] += int(r.get(k) or 0)
+        for k, v in (r.get("no_entran") or {}).items():
+            total["no_entran"][k] = total["no_entran"].get(k, 0) + int(v)
+    marca.parent.mkdir(parents=True, exist_ok=True)
+    marca.write_text(huella, encoding="utf-8")
+    total["archivo"] = ruta.name
+    return total
+
+
+def publicar_lista_erp() -> dict | None:
+    """Sube el export del ERP a la lista de precios, SOLO si el archivo cambio.
+
+    Alimenta dos cosas: los repuestos nuevos con stock (que si no, no existen
+    para la plataforma hasta que alguien los cree a mano) y el precio ERP de
+    todos los que ya estan (que estaba congelado en la carga del 04-09-2026).
+
+    Devuelve None si no hay archivo o ya se publico este mismo; un dict con los
+    totales si se publico. Va antes del recalculo, para que lo nuevo nazca con
+    precio en la misma corrida.
+    """
+    from ..motor import fuentes as _fuentes
+
+    try:
+        ruta = _fuentes.ruta_de("lista_erp")
+    except Exception:  # noqa: BLE001 - sin archivo no hay feed, y no es un fallo
+        return None
+    return _publicar_al_feed_erp("la lista del ERP", ruta, MARCA_LISTA_ERP)
+
+
+def publicar_altas_desde_stock() -> dict | None:
+    """Pasa el Excel de stock del dia por el mismo feed que el export del ERP.
+
+    La lista de precios solo sumaba productos nuevos con el export del ERP, que
+    alguien baja a mano: el ultimo era del 21-08-2026. Un repuesto que llego
+    despues, o que ese dia no tenia stock, no existia para la lista aunque
+    estuviera en bodega. El 06-10-2026 Hugo encontro 357 asi.
+
+    El Excel de stock es el mismo reporte del ERP filtrado a lo que tiene
+    existencia: trae descripcion, procedencia, precio de venta y costo, y llega
+    todos los dias. Las reglas de entrada no cambian, las aplica la plataforma:
+    repuesto, con stock, con rubro en la politica y no sacado a mano. A los que
+    ya estan les deja el precio ERP al dia.
+
+    Solo el stock de Curifor: la lista de precios es de Curifor.
+    """
+    from ..motor import fuentes as _fuentes
+
+    try:
+        ruta = _fuentes.ruta_de("stock_bodegas")
+    except Exception:  # noqa: BLE001 - sin stock el motor ya fallo antes; aca no se repite
+        return None
+    return _publicar_al_feed_erp("las altas desde el stock", ruta, MARCA_STOCK_PRECIOS)
+
+
+def publicar_reglas_manuales() -> dict | None:
+    """Pide a la plataforma que aplique hoy las reglas de sugerencias manuales.
+
+    Son las de "nunca menos de N unidades" y "que alcance para N dias": cada dia
+    se recalculan con el stock, lo que viene en camino y lo que pide el sistema,
+    por eso van DESPUES de publicar el sugerido, el stock y el transito.
+
+    Hasta el 08-10-2026 las aplicaba un workflow de GitHub que fallaba con 403
+    todos los dias (no tenia el secreto): una regla se calculaba el dia en que se
+    creaba y nunca mas. Llamarlo dos veces el mismo dia no repite nada.
+    """
+    import httpx
+
+    base, email, password = _credenciales()
+    if not email or not password:
+        return None
+    try:
+        with httpx.Client(timeout=300) as c:
+            token = _token(c, base, email, password)
+            r = c.post(
+                f"{base}/api/admin/procesar-recurrentes",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if r.status_code == 404:
+                # Plataforma sin el endpoint desplegado todavia: no es un fallo.
+                return None
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:  # noqa: BLE001
+        fallo_publicacion("las reglas de sugerencias manuales", e)
+        return None
+
+
+def recalcular_precios() -> dict | None:
+    """Recalcula la lista de precios con el costo, stock y compras recien subidos.
+
+    Va al final: si corriera antes, calcularia con los datos de ayer. Lo que
+    cambie queda marcado en la plataforma para que Abastecimiento lo revise
+    antes de exportar al ERP.
+    """
+    import httpx
+
+    base, email, password = _credenciales()
+    if not email or not password:
+        return None
+    try:
+        with httpx.Client(timeout=900) as c:
+            token = _token(c, base, email, password)
+            r = c.post(
+                f"{base}/api/precios/recalcular",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            if r.status_code == 404:
+                # Plataforma sin el modulo desplegado todavia: no es un fallo.
+                return None
+            r.raise_for_status()
+            return r.json()
+    except Exception as e:  # noqa: BLE001
+        fallo_publicacion("el recalculo de precios", e)
+        return None
+
+
 def publicar_lead_time() -> dict | None:
     """Sube a la plataforma el lead time calculado (reemplaza la foto vigente)."""
     import csv
@@ -359,9 +1369,7 @@ def publicar_lead_time() -> dict | None:
         ]
     try:
         with httpx.Client(timeout=120) as c:
-            r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
-            r.raise_for_status()
-            token = r.json()["token"]
+            token = _token(c, base, email, password)
             r = c.post(
                 f"{base}/api/admin/lead-time-proveedor",
                 headers={"Authorization": f"Bearer {token}"},
@@ -370,12 +1378,284 @@ def publicar_lead_time() -> dict | None:
             r.raise_for_status()
             return r.json()
     except Exception as e:  # noqa: BLE001 - publicar el LT nunca debe romper la carga
-        print(f"  (no se pudo publicar el lead time: {e})")
+        fallo_publicacion("el lead time", e)
         return None
 
 
+# Dos corridas semanales perdidas. Los reemplazos no cambian tanto de una semana
+# a otra como para detener el sugerido, pero nadie debe comprar sobre una lista de
+# un mes sin saberlo. Regla 6 del prompt: usar la ultima disponible y AVISAR.
+DIAS_LISTA_VIEJA = 14
+
+
+def avisar_lista_ford_vieja(hoy: date) -> int | None:
+    """Avisa si la consulta al portal de FORD quedo vieja. Devuelve los dias.
+
+    La corrida semanal puede fallar sin que nadie se entere: si la sesion del
+    portal vencio y pidio MFA, el wrapper deja una incidencia, pero si nadie la
+    mira el motor sigue publicando los reemplazos de la semana pasada con la misma
+    cara de siempre. Aca se mide contra la fecha del archivo que efectivamente se
+    leyo y se avisa por los dos canales que pide la regla 6: el log de la corrida
+    y una incidencia en la plataforma.
+
+    Devuelve None si no hay archivo o no se pudo leer la fecha: eso ya lo reporta
+    quien lo lee, y este aviso nunca debe tapar un error de mas arriba.
+    """
+    ruta = _buscar("vigentes_ford", obligatorio=False)
+    if ruta is None:
+        return None
+    try:
+        from ..motor import lectores_excel as _lx
+
+        fechas = (
+            _lx.leer_reemplazos_ford(ruta)["extraido_en"].drop_nulls().sort()
+        )
+        if not len(fechas):
+            return None
+        ultima = dt.datetime.fromisoformat(fechas[-1]).date()
+    except Exception as e:  # noqa: BLE001
+        print(f"  (no se pudo leer la fecha de los vigentes FORD: {e})")
+        return None
+
+    dias = (hoy - ultima).days
+    if dias < DIAS_LISTA_VIEJA:
+        print(f"  vigentes FORD: consultados el {ultima:%d-%m-%Y} ({dias} dia(s)).")
+        return dias
+
+    print(f"  ADVERTENCIA: los vigentes de FORD tienen {dias} dias "
+          f"(ultima consulta al portal: {ultima:%d-%m-%Y}).")
+    _avisar_en_plataforma(
+        f"Los reemplazos de FORD tienen {dias} dias",
+        (f"La ultima consulta al portal fue el {ultima:%d-%m-%Y}. La corrida "
+         "semanal deberia dejarlos al dia todos los lunes, asi que si estan "
+         "viejos es que viene fallando -lo mas comun es que la sesion de FORD "
+         "vencio y quedo pidiendo el MFA, que lo tiene que poner una persona.\n\n"
+         "El sugerido sigue funcionando con la ultima lista disponible: los "
+         "reemplazos no cambian tanto de una semana a otra. Pero un codigo que "
+         "FORD dio de baja despues de esa fecha todavia no aparece como tal."),
+        pantalla="sugerido",
+    )
+    return dias
+
+
+def _avisar_en_plataforma(titulo: str, descripcion: str, pantalla: str) -> bool:
+    """Deja una incidencia. Nunca lanza: avisar no puede romper la corrida."""
+    import httpx
+
+    base, email, password = _credenciales()
+    if not email or not password:
+        return False
+    try:
+        with httpx.Client(timeout=60) as c:
+            token = _token(c, base, email, password)
+            r = c.post(
+                f"{base}/api/incidencias",
+                headers={"Authorization": f"Bearer {token}"},
+                json={"titulo": titulo, "descripcion": descripcion, "pantalla": pantalla},
+            )
+            r.raise_for_status()
+            return True
+    except Exception as e:  # noqa: BLE001
+        print(f"  (no se pudo dejar la incidencia: {e})")
+        return False
+
+
+def recargar_instock() -> dict | None:
+    """Vuelve a colgar la lista InStock del codigo vigente. Nunca lanza.
+
+    Va DESPUES de publicar los reemplazos y no es cosmetico: la carga resuelve
+    cada part number de la pauta contra el maestro y prefiere el vigente, pero
+    para saber cual es el vigente lee `agrupado` de la tabla que se acaba de
+    publicar. Si la agrupacion cambia y nadie recarga, la lista se queda con el
+    codigo viejo y la plataforma pide el MISMO repuesto dos veces: una por la
+    regla InStock con el codigo de baja y otra por reposicion con el vigente.
+
+    Paso dos veces el 24-08-2026. La primera fueron 6 repuestos duplicados; la
+    segunda, al invertir la precedencia FORD/mix, fue `25 KV6Z9155D` pidiendo 5
+    unidades por InStock mientras `25 KV6Z9155E` pedia 3 por reposicion. Las dos
+    veces hubo que darse cuenta a mano, que es justo lo que esto evita.
+    """
+    import httpx
+
+    base, email, password = _credenciales()
+    if not email or not password:
+        return None
+    try:
+        with httpx.Client(timeout=300) as c:
+            token = _token(c, base, email, password)
+            r = c.post(
+                f"{base}/api/admin/cargar-instock",
+                headers={"Authorization": f"Bearer {token}"},
+            )
+            r.raise_for_status()
+            out = r.json()
+            extra = (f", {out.get('sin_codigo')} sin codigo en el maestro"
+                     if out.get("sin_codigo") else "")
+            print(f"  InStock recargado: {out.get('productos')} repuestos{extra}.")
+            return out
+    except Exception as e:  # noqa: BLE001 - no puede romper una carga que ya salio bien
+        fallo_publicacion("InStock", e)
+        return None
+
+
+# Pasos de publicacion que NO se publicaron en esta corrida. Vacio = salio todo.
+_FALLOS: list[dict] = []
+
+# Cuantas veces se reintenta un paso y cuanto se espera entre intentos. Render
+# tarda decenas de segundos en despertar el servicio; con tres intentos y espera
+# creciente se cubre ese arranque sin dejar el job colgado si esta caido de verdad.
+REINTENTOS = 3
+ESPERA_BASE_SEG = 15
+
+# La carga del sugerido tiene un intento mas. En los logs del 29-09, 30-09 y
+# 02-10-2026 la plataforma recien volvio en el tercer intento, 45 s despues del
+# 502 y con un 503 entremedio: no quedaba margen si el reinicio tardaba un poco
+# mas. El cuarto suma 45 s (90 en total). Los timeouts no ganan ese intento: cada
+# uno ya espero 900 s con el servidor cargando por detras, y uno mas dejaria la
+# corrida sobre la hora que le da la tarea de Windows.
+REINTENTOS_CARGA = 4
+
+# Sintomas de "la infraestructura esta levantandose", no de un error del dato.
+_TRANSITORIOS = (
+    "502", "503", "504", "Bad Gateway", "Service Unavailable", "Gateway Timeout",
+    "ConnectError", "ConnectTimeout", "ReadTimeout", "RemoteProtocolError",
+    # 429: Render frena las rafagas despues de un 502 (21-09-2026). Esperar y
+    # volver es exactamente lo que pide.
+    "429", "Too Many Requests",
+    # 401: la sesion se invalido a mitad de corrida (un deploy cambia la clave
+    # de sesion). El reintento vuelve a entrar con `olvidar_token()`.
+    "401", "Unauthorized",
+)
+
+
+def _es_transitorio(e: Exception) -> bool:
+    texto = f"{type(e).__name__}: {e}"
+    return any(t in texto for t in _TRANSITORIOS)
+
+
+def fallo_publicacion(paso: str, e: Exception) -> None:
+    """Deja constancia de que un paso NO se publico.
+
+    Antes cada publicador imprimia el error y devolvia None, y `run` no podia
+    distinguir "no habia nada que publicar" de "fallo": el job terminaba en 0 y
+    decia "Listo. Los compradores ya ven los datos nuevos.".
+
+    Paso tres veces entre el 28-08 y el 01-09-2026. La peor fue la del 01-09: se
+    publico el sugerido con stock nuevo y fallaron el stock unificado y el
+    transito, asi que la grilla y la ficha del mismo repuesto mostraban numeros
+    distintos, y el sugerido descontaba un transito viejo. Quedar a medias es
+    peor que no publicar nada, porque no se nota.
+    """
+    print(f"  (no se pudo publicar {paso}: {e})")
+    _FALLOS.append({
+        "paso": paso,
+        "error": f"{type(e).__name__}: {e}",
+        "transitorio": _es_transitorio(e),
+    })
+
+
+def publicar_con_reintentos(paso: str, fn, *args):
+    """Corre un paso de publicacion y reintenta lo que es transitorio.
+
+    Se detecta el fallo mirando si `fn` registro uno en `_FALLOS`, y no por lo que
+    devuelve: un `None` tambien significa "no habia nada que publicar", que es
+    legitimo y no se debe reintentar.
+    """
+    for intento in range(1, REINTENTOS + 1):
+        marca = len(_FALLOS)
+        r = fn(*args)
+        if len(_FALLOS) == marca:
+            return r
+        if not _FALLOS[-1]["transitorio"] or intento == REINTENTOS:
+            return None
+        espera = ESPERA_BASE_SEG * intento
+        print(f"    reintentando {paso} en {espera}s "
+              f"(intento {intento + 1} de {REINTENTOS})...")
+        # El fallo solo cuenta si el ULTIMO intento tambien falla.
+        _FALLOS.pop()
+        # Si el token se invalido (un deploy a mitad de corrida), el reintento
+        # entra de nuevo; si el problema era otro, un login mas no molesta.
+        olvidar_token()
+        time.sleep(espera)
+    return None
+
+
+def avisar_falla(motivo: str, detalle: str = "") -> bool:
+    """Deja una incidencia en la plataforma cuando la corrida diaria falla.
+
+    Hasta ago-2026 un fallo solo escribia "RESULTADO: FALLO" en un log local que
+    no lee nadie. La carga estuvo rota del 31-jul al 03-ago (la plataforma
+    devolvia un 500) y el equipo siguio comprando sobre el sugerido del 30-jul
+    sin enterarse. La incidencia ademas dispara la campanita de los admin.
+
+    Devuelve True si el aviso se pudo dejar. Nunca lanza: si la plataforma esta
+    caida no hay nada que hacer, y este aviso jamas debe tapar el error original.
+    """
+    import httpx
+
+    base, email, password = _credenciales()
+    if not email or not password:
+        return False
+    hoy = date.today()
+    # Se avisa justo despues de un fallo, y el fallo mas comun es un reinicio de
+    # la plataforma: el token de la corrida ya no vale. Con el viejo, la
+    # incidencia daba 401 y los admin no se enteraban (29-09, 30-09 y 02-10-2026).
+    olvidar_token()
+    try:
+        with httpx.Client(timeout=60) as c:
+            token = _token(c, base, email, password)
+            r = c.post(
+                f"{base}/api/incidencias",
+                headers={"Authorization": f"Bearer {token}"},
+                json={
+                    "titulo": f"La actualizacion del sugerido fallo ({hoy:%d-%m-%Y})",
+                    "descripcion": (
+                        f"{motivo}\n\n{detalle}\n\n"
+                        "El sugerido NO se actualizo: sigue mostrando la carga anterior. "
+                        "Mientras no se corrija, lo que se compre sale de datos viejos."
+                    ).strip(),
+                    "pantalla": "cargar",
+                },
+            )
+            r.raise_for_status()
+            return True
+    except Exception as e:  # noqa: BLE001 - avisar nunca puede romper mas de lo que ya esta roto
+        print(f"  (ademas, no se pudo dejar la incidencia del fallo: {e})")
+        return False
+
+
 def enviar(csv_path: Path, oficial: bool = False) -> dict:
-    """Sube el CSV a la plataforma: comparacion (sombra) o carga (oficial)."""
+    """Sube el CSV a la plataforma: comparacion (sombra) o carga (oficial).
+
+    Reintenta los 502/503 igual que los pasos de publicacion. Es LA llamada que
+    importa -sin ella no hay sugerido nuevo- y sin embargo era la unica sin
+    proteccion: el 03-09-2026 la corrida murio con un 502 en
+    `/api/admin/cargar-sugerido` mientras Render despertaba, y quedo todo el dia
+    con el dato de ayer.
+
+    Cada reintento entra de nuevo a la plataforma. Antes reintentaba con el token
+    del inicio de la corrida: si el 502 era Render reiniciandose, al volver la
+    sesion ya no valia y el ultimo intento daba 401. Asi se perdio el sugerido
+    del 29-09, el 30-09 y el 02-10-2026 (502, 503, 401 en los tres logs).
+    """
+    ultimo: Exception | None = None
+    for intento in range(1, REINTENTOS_CARGA + 1):
+        try:
+            return _enviar_una_vez(csv_path, oficial)
+        except Exception as e:  # noqa: BLE001
+            ultimo = e
+            tope = REINTENTOS if "Timeout" in type(e).__name__ else REINTENTOS_CARGA
+            if not _es_transitorio(e) or intento >= tope:
+                raise
+            espera = ESPERA_BASE_SEG * intento
+            print(f"  la plataforma no respondio ({e}); reintentando la carga en "
+                  f"{espera}s (intento {intento + 1} de {tope})...")
+            olvidar_token()
+            time.sleep(espera)
+    raise ultimo  # pragma: no cover - el for siempre sale por return o raise
+
+
+def _enviar_una_vez(csv_path: Path, oficial: bool = False) -> dict:
     import httpx
 
     # Las credenciales vienen del entorno o del .env del repo (donde las deja el
@@ -387,10 +1667,14 @@ def enviar(csv_path: Path, oficial: bool = False) -> dict:
             "en el entorno (nunca en el repo)."
         )
 
-    with httpx.Client(timeout=300) as c:
-        r = c.post(f"{base}/api/auth/login", json={"email": email, "password": password})
-        r.raise_for_status()
-        token = r.json()["token"]
+    # 900 s y no 300: desde que el sugerido volvio a tener septiembre son 18.254
+    # filas, y a Render en plan gratis cargarlas le toma ~5 minutos. Con 300 s el
+    # cliente se rendia justo antes de la respuesta -el 05 y 06-10-2026 fallaron
+    # los tres intentos con ReadTimeout- y lo peor es que el servidor seguia
+    # cargando igual: cada reintento le apilaba otra carga encima y las volvia a
+    # todas mas lentas.
+    with httpx.Client(timeout=900) as c:
+        token = _token(c, base, email, password)
         ruta = "/api/admin/cargar-sugerido" if oficial else "/api/admin/motor/comparar"
         with open(csv_path, "rb") as f:
             r = c.post(
@@ -413,8 +1697,48 @@ FRESCURA_DIAS = {
     "seguimiento_frontera": 7,
     "ventas_frontera": 35,
     "catalogo": 120,
+    # Export manual del ERP para la lista de precios: se pide semanal. Pasado
+    # de esto los precios nuevos del ERP no se ven y los repuestos nuevos no
+    # entran a la lista. Solo avisa: el sugerido no depende de el.
+    "lista_erp": 10,
     "mix_reemplazos": 120,
 }
+
+# Archivos cuyo atraso se AVISA pero no frena la carga.
+#
+# `ventas_frontera` son las ventas de la otra empresa (E07). Medido el 28-08-2026
+# sobre 17.100 filas: 49 son Solo Frontera y NINGUNA de ellas pide algo; el 95,5%
+# del valor sugerido es Curifor puro. Que ese archivo tenga un mes de atraso no
+# cambia una decision de compra.
+#
+# Tenerlo como bloqueante dejo la carga diaria caida 8 dias seguidos (27-08 al
+# 03-09-2026) y obligo a publicar a mano con --ignorar-frescura, que de paso
+# apagaba la guarda para TODOS los demas archivos, incluido el stock, que si
+# importa. Una guarda que obliga a saltearse todas las guardas es peor que no
+# tenerla.
+FRESCURA_SOLO_AVISA = {"ventas_frontera", "lista_erp"}
+
+
+def dias_habiles(desde: date, hasta: date) -> int:
+    """Dias entre dos fechas SIN contar sabados ni domingos.
+
+    La frescura se mide en dias habiles y no corridos porque los archivos se
+    exportan en dias de trabajo. Contando corridos, un archivo del viernes tiene 3
+    dias el lunes y cualquier limite de 2 lo da por vencido: la carga se frenaba
+    TODOS los lunes por un archivo que en realidad era del ultimo dia habil.
+
+    Paso el 07-09-2026 con `stock_frontera.xlsx` (viernes 04-09), justo despues de
+    que el equipo empezara a confiar en que la corrida automatica andaba.
+    """
+    if hasta <= desde:
+        return 0
+    dias = 0
+    actual = desde
+    while actual < hasta:
+        actual += timedelta(days=1)
+        if actual.weekday() < 5:  # 5 = sabado, 6 = domingo
+            dias += 1
+    return dias
 
 
 def revisar_frescura(hoy: date | None = None) -> list[str]:
@@ -427,57 +1751,391 @@ def revisar_frescura(hoy: date | None = None) -> list[str]:
 
     hoy = hoy or date.today()
     viejos = []
-    for fuente, dias in FRESCURA_DIAS.items():
+    for fuente, (dias, solo_avisa) in _plazos_de_frescura().items():
         try:
             ruta = fuentes.ruta_de(fuente)
         except FileNotFoundError:
             continue
-        edad = (hoy - date.fromtimestamp(ruta.stat().st_mtime)).days
+        # Una fuente con varios archivos (ventas: el respaldo del ano y el del
+        # anterior, que ya no se toca) se mide con el mas nuevo, igual que el panel.
+        # `ruta_de` da el primero por nombre, y con el se frenaba todos los dias.
+        m = fuentes.manifiesto_fijado()
+        if m is not None and m.cubre(fuente) and len(m.rutas(fuente)) > 1:
+            ruta = max(m.rutas(fuente), key=lambda p: p.stat().st_mtime)
+        edad = dias_habiles(date.fromtimestamp(ruta.stat().st_mtime), hoy)
         if edad > dias:
-            viejos.append(f"{ruta.name}: {edad} dias (se espera al dia cada {dias})")
+            aviso = f"{ruta.name}: {edad} dias habiles (se espera al dia cada {dias})"
+            if solo_avisa:
+                aviso += " - no frena la carga"
+            viejos.append(aviso)
     return viejos
 
 
+def _plazos_de_frescura() -> dict[str, tuple[int, bool]]:
+    """{fuente: (dias habiles, solo avisa)}. En modo `activa` salen de la
+    configuracion de la plataforma (Fuentes de datos); si no, de las constantes."""
+    m = _fuentes.manifiesto_fijado()
+    if m is not None and m.resolucion == "plataforma":
+        return m.plazos()
+    return {f: (d, f in FRESCURA_SOLO_AVISA) for f, d in FRESCURA_DIAS.items()}
+
+
+def frescura_que_frena(hoy: date | None = None) -> list[str]:
+    """Solo los atrasos que justifican NO publicar.
+
+    Se separa de `revisar_frescura` para que el aviso se siga viendo en el log aun
+    cuando el archivo no frene nada: el dato viejo se informa igual, lo que cambia
+    es que ya no bloquea la corrida entera.
+
+    En modo `activa` tambien frena lo que la configuracion pide y no esta: una
+    fuente obligatoria sin archivo, una carpeta que este PC no tiene, o dos
+    fuentes que eligieron el mismo archivo. En los otros modos eso no frena nada:
+    hoy un archivo que falta se salta en silencio, y asi sigue hasta activar.
+    """
+    frena = [v for v in revisar_frescura(hoy) if "no frena la carga" not in v]
+    m = _fuentes.manifiesto_fijado()
+    return frena + (m.bloqueos() if m is not None else [])
+
+
+# Desde que dia del mes la falta del mes cerrado FRENA la carga. Los primeros dias
+# el respaldo del mes recien cerrado puede no estar exportado todavia y se avisa;
+# desde el 4 se frena: un sugerido calculado con un mes en cero pide de menos.
+DIA_DESDE_QUE_FRENA_VENTAS = 4
+
+
+def revisar_ventas_mes_cerrado(csv_path, hoy: date | None = None,
+                               corrida: dict | None = None) -> tuple[str | None, str | None]:
+    """(aviso, bloqueo): si el CSV recien calculado trae el ultimo mes cerrado
+    SIN ventas.
+
+    Paso del 01 al 21-09-2026 sin que nadie lo notara: el respaldo `2026 (6).xlsx`
+    terminaba el 31-07, el motor tomo agosto como ultimo mes cerrado y las 17.102
+    filas salieron con `Venta Mes 01 = 0`. Todo lo que vendio en agosto perdio un
+    mes en la clase ABC y la demanda promedio un mes vacio: tres semanas pidiendo
+    de menos. El control de frescura no lo vio porque los respaldos de venta de
+    Curifor se eligen por descarte y no tienen fuente propia.
+
+    Se mira el EFECTO (la columna del CSV) y no el archivo: asi da lo mismo si las
+    ventas vienen del Excel, del SQL o del snapshot.
+
+    `corrida`: si viene, guarda ahi el periodo y el total para el panel de
+    Fuentes de datos ("Ventas sin el mes cerrado").
+    """
+    import csv
+
+    hoy = hoy or date.today()
+    periodo, total, filas = None, 0.0, 0
+    with open(csv_path, encoding="utf-8", newline="") as f:
+        for r in csv.DictReader(f):
+            filas += 1
+            periodo = periodo or r.get("Periodo Ultimo Mes")
+            try:
+                total += float(r.get("Venta Mes 01") or 0)
+            except ValueError:
+                pass
+    if corrida is not None:
+        corrida["ventas"] = {"periodo_ultimo_mes": periodo, "total_mes_cerrado": total}
+    if not filas or total > 0:
+        return None, None
+    mes = f"{periodo[4:6]}-{periodo[:4]}" if periodo and len(periodo) == 6 else str(periodo)
+    texto = (f"El respaldo de ventas no trae el mes {mes}: las {filas:,} filas del sugerido "
+             f"salen con la venta de ese mes en cero, como si no se hubiera vendido nada. "
+             f"Exportar el respaldo de ventas del año (Bases de datos\\Ventas) y volver a correr.")
+    if hoy.day < DIA_DESDE_QUE_FRENA_VENTAS:
+        return texto + f" (avisa hasta el dia {DIA_DESDE_QUE_FRENA_VENTAS}; despues frena la carga)", None
+    return None, texto
+
+
+def _proceso_vivo(pid: int) -> bool:
+    """Si el PID sigue corriendo. En Windows `os.kill(pid, 0)` no sirve para
+    preguntar, asi que se consulta al sistema."""
+    if pid <= 0:
+        return False
+    if os.name == "nt":
+        import ctypes
+
+        SYNCHRONIZE = 0x00100000
+        h = ctypes.windll.kernel32.OpenProcess(SYNCHRONIZE, False, pid)
+        if not h:
+            return False
+        ctypes.windll.kernel32.CloseHandle(h)
+        return True
+    try:
+        os.kill(pid, 0)
+        return True
+    except OSError:
+        return False
+
+
+def tomar_candado() -> str | None:
+    """Reclama el candado. Devuelve None si se pudo, o el motivo si ya hay una
+    corrida en curso.
+
+    Un candado cuyo proceso ya no existe -el PC se apago a mitad, el proceso
+    murio sin limpiar- se pisa: si no, una corrida caida dejaria al motor sin
+    poder arrancar nunca mas.
+    """
+    CANDADO.parent.mkdir(parents=True, exist_ok=True)
+    if CANDADO.exists():
+        try:
+            pid_txt, _, desde = CANDADO.read_text(encoding="utf-8").strip().partition(" ")
+            pid = int(pid_txt)
+        except (ValueError, OSError):
+            pid, desde = 0, "?"
+        if _proceso_vivo(pid):
+            return f"ya hay una corrida en curso (PID {pid}, desde {desde}); no se lanza otra."
+        print(f"  (candado viejo de un proceso que ya no existe: PID {pid}; se pisa)")
+    CANDADO.write_text(
+        f"{os.getpid()} {dt.datetime.now():%Y-%m-%d %H:%M:%S}", encoding="utf-8")
+    return None
+
+
+def soltar_candado() -> None:
+    try:
+        if CANDADO.exists() and CANDADO.read_text(encoding="utf-8").split(" ")[0] == str(os.getpid()):
+            CANDADO.unlink()
+    except OSError:
+        pass
+
+
 def run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
+    ocupado = tomar_candado()
+    if ocupado:
+        # No es un fallo del motor: la otra corrida va a publicar lo mismo. Se
+        # dice y se sale limpio, sin incidencia.
+        print(f"NO SE CORRE: {ocupado}")
+        return 0
+    try:
+        return _run(oficial=oficial, ignorar_frescura=ignorar_frescura)
+    finally:
+        soltar_candado()
+
+
+def preparar_fuentes(corrida: dict):
+    """El manifiesto de la corrida (ver `config_fuentes.preparar_fuentes`)."""
+    return _cf.preparar_fuentes(corrida, carpeta_ventas=CRUDOS_DIR)
+
+
+def publicar_reporte_fuentes(corrida: dict) -> bool:
+    """Manda al panel de Fuentes de datos como termino la corrida.
+
+    Nunca lanza `Exception` y no pasa por `_FALLOS`: el reporte no es parte de la
+    publicacion, y si la plataforma no lo recibe queda pendiente para la corrida
+    siguiente. Una corrida que ya publico no puede quedar "incompleta" por esto.
+    """
+    try:
+        corrida["terminada_en"] = _cf._ahora_iso()
+        return _cf.enviar_reporte(_cf.payload_de_reporte(corrida, "fin"))
+    except Exception as e:  # noqa: BLE001
+        print(f"  (no se pudo armar el reporte de fuentes: {type(e).__name__}: {e})")
+        return False
+
+
+def publicar_reportes_pendientes() -> int:
+    """Reenvia los reportes de fuentes que no se pudieron mandar (incluida la
+    corrida anterior, si se corto a mitad). Nunca lanza."""
+    try:
+        return _cf.reenviar_pendientes()
+    except Exception as e:  # noqa: BLE001
+        print(f"  (no se pudieron reenviar los reportes de fuentes pendientes: {e})")
+        return 0
+
+
+def _run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
+    # El reporte de fuentes va aca y no en `run`: los tests del candado parchan
+    # `_run` y llaman a `run`.
+    corrida = _cf.nueva_corrida(oficial)
+    try:
+        codigo = _correr(corrida, oficial=oficial, ignorar_frescura=ignorar_frescura)
+        if corrida["resultado"] == "en_curso":
+            corrida["resultado"] = "ok" if codigo == 0 else "fallo"
+        return codigo
+    except BaseException:
+        corrida["resultado"] = "cortada"
+        raise
+    finally:
+        publicar_reporte_fuentes(corrida)
+        _fuentes.soltar_manifiesto()
+        _cf.borrar_corrida_en_curso()
+
+
+def _correr(corrida: dict, oficial: bool = False, ignorar_frescura: bool = False) -> int:
     print(f"Crudos: {CRUDOS_DIR}")
+
+    # Antes de mirar ningun archivo: lo que quedo sin reportar, y despues el
+    # manifiesto (que archivo lee cada fuente). Si el modulo de fuentes falla, la
+    # corrida sigue como siempre: nunca deja al motor sin correr.
+    publicar_reportes_pendientes()
+    try:
+        manifiesto = preparar_fuentes(corrida)
+    except Exception as e:  # noqa: BLE001
+        manifiesto = None
+        corrida.setdefault("avisos", []).append(
+            f"No se pudo preparar el manifiesto de fuentes y se leyo como siempre: "
+            f"{type(e).__name__}: {e}")
+        print(f"  (fuentes de datos: no se pudo preparar el manifiesto, se sigue como siempre: {e})")
+    if manifiesto is not None:
+        if oficial and not manifiesto.es_titular:
+            # La guarda de PC titular: con dos PCs con la tarea programada, solo
+            # uno publica. Este deja su reporte y sale limpio, sin incidencia.
+            texto = ("NO SE PUBLICA: este PC no es el titular "
+                     f"({manifiesto.alias_titular or manifiesto.pc_titular})")
+            print(texto)
+            corrida["resultado"], corrida["motivo"] = "no_titular", texto
+            return 0
+        _fuentes.fijar_manifiesto(manifiesto)
 
     viejos = revisar_frescura()
     for v in viejos:
         print(f"  DESACTUALIZADO: {v}")
-    if viejos and oficial and not ignorar_frescura:
-        print(
-            "\nERROR: no se carga a produccion con archivos desactualizados.\n"
-            "Actualizalos en la carpeta de datos, o usa --ignorar-frescura si "
-            "sabes que asi corresponde.",
-            file=sys.stderr,
-        )
+    # Solo la corrida oficial avisa: el modo sombra es una prueba y ensuciaria
+    # las incidencias del equipo.
+    def _fallar(motivo: str, detalle: str = "", resultado: str = "frenada") -> int:
+        print(f"ERROR: {motivo}\n{detalle}".rstrip(), file=sys.stderr)
+        # frenada: un dato malo (frescura, ventas, un archivo que falta); fallo:
+        # el calculo o la plataforma.
+        corrida["resultado"] = resultado
+        corrida["motivo"] = f"{motivo}\n{detalle}".rstrip()
+        if oficial and avisar_falla(motivo, detalle):
+            print("  incidencia dejada en la plataforma (los admin ven la campanita).")
         return 1
+
+    bloqueantes = frescura_que_frena()
+    if bloqueantes and oficial and not ignorar_frescura:
+        if manifiesto is not None and manifiesto.bloqueos():
+            return _fallar(
+                "No se carga a produccion: faltan archivos o estan desactualizados.",
+                "Problemas:\n  - " + "\n  - ".join(bloqueantes)
+                + "\n\nRevisalos en Fuentes de datos, o corre con "
+                "--ignorar-frescura si sabes que asi corresponde.",
+            )
+        return _fallar(
+            "No se carga a produccion con archivos desactualizados.",
+            "Archivos vencidos:\n  - " + "\n  - ".join(bloqueantes)
+            + "\n\nActualizalos en la carpeta de datos, o corre con "
+            "--ignorar-frescura si sabes que asi corresponde.",
+        )
 
     try:
         csv_path = construir_csv()
-    except FileNotFoundError as e:
-        print(f"ERROR: {e}", file=sys.stderr)
-        return 1
+    except Exception as e:  # noqa: BLE001
+        return _fallar("El motor no pudo calcular el sugerido.", f"{type(e).__name__}: {e}",
+                       resultado="fallo")
     print(f"CSV generado: {csv_path}")
+
+    # Solo en modo `activa`: los dos stocks y el seguimiento nacional no pueden
+    # llegar vacios ni con menos del 60 % de las filas de la corrida anterior.
+    if manifiesto is not None:
+        from ..motor import lectores_excel
+
+        bloqueo_filas = manifiesto.revisar_filas(lectores_excel.LECTURAS)
+        if bloqueo_filas and oficial and not ignorar_frescura:
+            return _fallar("Un archivo llegó vacío o incompleto", bloqueo_filas)
+
+    aviso_ventas, bloqueo_ventas = revisar_ventas_mes_cerrado(csv_path, corrida=corrida)
+    if aviso_ventas:
+        print(f"  AVISO: {aviso_ventas}")
+    if bloqueo_ventas and oficial and not ignorar_frescura:
+        return _fallar("No se carga a produccion con el ultimo mes de ventas vacio.",
+                       bloqueo_ventas)
 
     try:
         resultado = enviar(csv_path, oficial=oficial)
     except Exception as e:  # noqa: BLE001
-        print(f"ERROR al enviar a la plataforma: {e}", file=sys.stderr)
-        return 1
+        return _fallar(
+            "El motor calculo bien, pero la plataforma rechazo la carga.",
+            f"{type(e).__name__}: {e}",
+            resultado="fallo",
+        )
 
     if oficial:
+        corrida["publico"] = True
         print(f"CARGA OFICIAL: {resultado.get('filas_cargadas')} filas.")
         for a in resultado.get("advertencias", []):
             print(f"  advertencia: {a}")
         # El detalle del lead time calculado, para verlo en Calibracion.
-        lt = publicar_lead_time()
+        lt = publicar_con_reintentos("el lead time", publicar_lead_time)
         if lt:
             print(f"  lead time publicado: {lt.get('filas_cargadas')} filas.")
         # El stock por bodega, para la ficha del catalogo.
-        stk = publicar_stock_unificado()
+        stk = publicar_con_reintentos("el stock", publicar_stock_unificado)
         if stk:
             print(f"  stock publicado: {stk.get('filas_cargadas')} filas.")
+        # El transito de todo el catalogo, para que el comprador no compre de nuevo
+        # algo que ya viene en camino aunque no este en el sugerido.
+        tra = publicar_con_reintentos("el transito", publicar_transito)
+        if tra:
+            print(f"  transito publicado: {tra.get('filas_cargadas')} filas.")
+        # Las OC recientes: cierran lo de una sola vez que ya se compro, para que la
+        # descarga siguiente del sugerido no lo vuelva a pedir.
+        ocs = publicar_con_reintentos("las OC recientes", publicar_oc_recientes)
+        if ocs:
+            print(f"  OC recientes: {ocs.get('lineas_recibidas')} OC; "
+                  f"{ocs.get('sugerencias_cerradas')} sugerencias de una sola vez cerradas.")
+        # Los meses de venta que la plataforma no tenga. Normalmente ninguno; al
+        # pegar un mes nuevo en el respaldo, ese mes.
+        vta = publicar_con_reintentos("las ventas", publicar_ventas_historicas)
+        if vta and vta.get("al_dia"):
+            print("  ventas: la plataforma ya esta al dia.")
+        elif vta:
+            print(f"  ventas publicadas: {vta.get('filas_cargadas')} filas "
+                  f"(periodos {', '.join(vta.get('periodos') or [])}).")
+        # Las reglas de sugerencias manuales, con el sugerido, el stock y el
+        # transito de hoy ya arriba.
+        reg = publicar_con_reintentos("las reglas de sugerencias manuales",
+                                      publicar_reglas_manuales)
+        if reg:
+            print(f"  reglas de sugerencias manuales: {reg.get('recurrencias_procesadas')} "
+                  f"aplicadas, {reg.get('sugerencias_creadas')} sugerencias, "
+                  f"{reg.get('expiradas_archivadas')} vencidas archivadas.")
+        # Equivalencia codigo Curifor -> SKU del portal, para armar el archivo de
+        # carga masiva sin que el comprador convierta codigos a mano.
+        sku = publicar_con_reintentos("la equivalencia de SKU", publicar_sku_proveedor,
+                                      globals().get("_ULTIMAS_FUENTES") or {})
+        if sku:
+            print(f"  equivalencias de SKU publicadas: {sku.get('filas_cargadas')} ({sku.get('proveedor')}).")
+        # A quien se le compra cada producto. El sugerido ya lo trae para lo que
+        # el motor calcula; esto cubre el resto (InStock, manuales), que salia sin
+        # proveedor y por lo tanto fuera del carro de compra.
+        prov = publicar_con_reintentos("el proveedor por producto",
+                                       publicar_proveedor_producto,
+                                       globals().get("_ULTIMAS_FUENTES") or {})
+        if prov:
+            print(f"  proveedor por producto publicado: {prov.get('filas_cargadas')} productos.")
+        # Que codigo esta descontinuado y cual lo reemplaza, para que el comprador
+        # no compre uno muerto. La agrupacion ya ocurrio arriba, al armar el mapeo.
+        rep = publicar_con_reintentos("los reemplazos", publicar_reemplazos,
+                                      globals().get("_ULTIMAS_FUENTES") or {})
+        if rep:
+            print(f"  reemplazos FORD publicados: {rep.get('filas_cargadas')} filas "
+                  f"({rep.get('agrupados')} agrupan stock, el resto solo avisa).")
+            publicar_con_reintentos("InStock", recargar_instock)
+        # La lista de precios: costo de todos los productos y ultima compra (que
+        # decide Importado/Nacional). El recalculo va al final, con todo arriba.
+        cos = publicar_con_reintentos("los costos de precios", publicar_costos_precios)
+        if cos:
+            print(f"  costos de precios publicados: {cos.get('actualizados')} productos.")
+        com = publicar_con_reintentos("las compras de precios", publicar_compras_precios)
+        if com:
+            print(f"  compras de precios publicadas: {com.get('actualizados')} productos.")
+        erp = publicar_con_reintentos("la lista del ERP", publicar_lista_erp)
+        if erp:
+            fuera = ", ".join(f"{k} {v:,}" for k, v in sorted(erp["no_entran"].items()))
+            print(f"  lista del ERP publicada ({erp['archivo']}): {erp['creados']} productos nuevos "
+                  f"con stock, precio ERP actualizado en {erp['actualizados']:,}. "
+                  f"Quedan fuera: {fuera}.")
+        # Despues del export del ERP y antes del recalculo: lo que entra hoy nace
+        # con precio en esta misma corrida.
+        alt = publicar_con_reintentos("las altas desde el stock", publicar_altas_desde_stock)
+        if alt:
+            fuera = ", ".join(f"{k} {v:,}" for k, v in sorted(alt["no_entran"].items()))
+            print(f"  altas desde el stock ({alt['archivo']}): {alt['creados']} productos nuevos "
+                  f"en la lista de precios, precio ERP al dia en {alt['actualizados']:,}. "
+                  f"Quedan fuera: {fuera}.")
+        pre = publicar_con_reintentos("el recalculo de precios", recalcular_precios)
+        if pre:
+            print(f"  precios recalculados: {pre.get('productos')} productos, "
+                  f"{pre.get('cambios')} cambios en {pre.get('productos_con_cambios')}.")
     else:
         print(
             f"SOMBRA: paridad {resultado['paridad_pct']}% "
@@ -490,6 +2148,26 @@ def run(oficial: bool = False, ignorar_frescura: bool = False) -> int:
         ]
         if peores:
             print(f"  mayores divergencias: {', '.join(peores)}")
+
+    if oficial and _FALLOS:
+        # Quedar a medias es peor que no publicar: el sugerido queda con datos
+        # nuevos y las tablas que fallaron con los viejos, sin que nada avise.
+        detalle = "\n".join(f"  - {f['paso']}: {f['error']}" for f in _FALLOS)
+        print("\nLA CARGA QUEDO INCOMPLETA. No se publico:", file=sys.stderr)
+        print(detalle, file=sys.stderr)
+        print("Los datos de la plataforma pueden estar inconsistentes entre si. "
+              "Corre el motor de nuevo cuando la plataforma responda.", file=sys.stderr)
+        corrida["resultado"] = "incompleta"
+        corrida["motivo"] = "La carga oficial quedo incompleta. No se publico:\n" + detalle
+        if avisar_falla(
+            f"La carga oficial quedo incompleta: fallaron {len(_FALLOS)} paso(s) "
+            "de publicacion.",
+            detalle + "\n\nEl sugerido se publico, pero esas tablas quedaron con "
+            "el dato anterior. Volver a correr el motor.",
+        ):
+            print("  incidencia dejada en la plataforma (los admin ven la campanita).")
+        return 1
+
     return 0
 
 

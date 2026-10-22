@@ -15,13 +15,44 @@ def test_mapear_sucursal_id():
     assert F.mapear_sucursal_id(None) == "DESCONOCIDO"
 
 
-def test_cantidad_ajustada():
+def test_cantidad_ajustada_sin_monto_decide_el_nombre():
     df = pl.DataFrame({
-        "tipoDocto": ["FACTURA", "NC CLIENTE S/T", "NC-ELECTR REPTO", "GUIA"],
-        "Cantidad": [5, 3, -2, -4],
+        "tipoDocto": ["FACTURA", "NC CLIENTE S/T", "NC-ELECTR REPTO", "GUIA", " nota credito st ", "NC GARANTIA S/T"],
+        "Cantidad": [5, 3, -2, -4, 1, 2],
+    }).with_columns(F.cantidad_ajustada_expr(con_monto=False).alias("ca"))
+    # Credito (NC*, NOTA CREDITO*, sin importar mayusculas ni espacios) resta; el resto suma.
+    assert df.get_column("ca").to_list() == [5, -3, -2, 4, -1, -2]
+
+
+def test_cantidad_ajustada_igual_que_el_power_bi():
+    """La regla de 'VentasUnificadas'[CantidadAjustada] del modelo de Abastecimiento: es
+    credito si el monto neto es negativo o si el documento empieza con NC o NOTA CREDITO.
+    Caso real (70 8975260081, Linderos): un turbo anulado y refacturado en septiembre.
+    Con la lista fija vieja contaba 4 ventas; el reporte de Consumos dice 0."""
+    df = pl.DataFrame({
+        "tipoDocto": ["NOTA CREDITO ST", "SOLICITUD N/C ST", "REFACTURACION C/RS", "SOL. REFACT C/RS"],
+        "Cantidad": [1, 1, 1, 1],
+        "Total Neta": [-1989541.0, 0.0, 1989541.0, -1989541.0],
     }).with_columns(F.cantidad_ajustada_expr().alias("ca"))
-    # NC restan (valor absoluto negativo); el resto suma en valor absoluto.
-    assert df.get_column("ca").to_list() == [5, -3, -2, 4]
+    assert df.get_column("ca").to_list() == [-1, 1, 1, -1]
+    assert df.get_column("ca").sum() == 0
+
+
+def test_cantidad_ajustada_monto_vacio_no_es_credito():
+    df = pl.DataFrame({"tipoDocto": ["FACTURA ST", "FACTURA ST"], "Cantidad": [2, 3],
+                       "Total Neta": [None, -10.0]}).with_columns(F.cantidad_ajustada_expr().alias("ca"))
+    assert df.get_column("ca").to_list() == [2, -3]
+
+
+def test_la_nota_de_credito_de_frontera_resta():
+    raw = pl.DataFrame({
+        "producto": ["P1", "P1"], "SUCURSAL": ["02 LINDEROS", "02 LINDEROS"], "Tipo-Venta": ["REPARACION"] * 2,
+        "fecha": [date(2026, 9, 1), date(2026, 9, 2)], "cantidad": [1, 1],
+        "Documento": ["FACTURA ST", "NOTA CREDITO ST"], "Docto-Emitido": ["Emitido"] * 2,
+        "tipoproducto": ["REPUESTO"] * 2, "Total Neta": [100.0, -100.0],
+    })
+    out = F.normalizar_ventas_frontera(raw)
+    assert out.get_column("CantidadAjustada").to_list() == [1, -1]
 
 
 def test_normalizar_seguimiento():
@@ -109,8 +140,9 @@ def test_normalizar_ventas_frontera():
     assert out.get_column("Producto").to_list() == ["P1", "P2"]
     # SUCURSAL: "02 LINDEROS" se des-prefija; "08 TALCA" pasa igual (no está en las 5).
     assert out.get_column("SUCURSAL").to_list() == ["LINDEROS", "08 TALCA"]
-    # NOTA CREDITO ST NO está en la lista de NC -> la NC de Frontera SUMA (+4).
-    assert out.get_column("CantidadAjustada").to_list() == [5, 4]
+    # NOTA CREDITO ST es credito -> resta (-4), igual que en el modelo de Power BI.
+    # Antes, con la lista fija vieja, la NC de Frontera sumaba (+4).
+    assert out.get_column("CantidadAjustada").to_list() == [5, -4]
     assert out.get_column("Fuente").unique().to_list() == ["Frontera"]
 
 

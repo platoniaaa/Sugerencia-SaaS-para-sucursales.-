@@ -1,0 +1,21 @@
+# El entorno del motor mas lo que hace falta para correr sus pruebas
+# (tests_motor y tests). Junto con requirements-motor.txt reproduce, version por
+# version, el entorno del PC del dueño al 19-10-2026.
+-r requirements-motor.txt
+
+pytest==9.1.1
+pluggy==1.6.0
+iniconfig==2.3.0
+packaging==26.2
+Pygments==2.20.0
+colorama==0.4.6
+
+# Estaban en ese entorno y ni el motor ni sus pruebas los importan: pg8000 es el
+# driver de Postgres de la API (src/db.py), que no corre en el PC del motor, y el
+# resto son sus dependencias. Van aca para que el entorno sea el mismo; se pueden
+# sacar cuando alguien lo confirme con la suite completa.
+pg8000==1.31.5
+scramp==1.4.12
+asn1crypto==1.5.1
+python-dateutil==2.9.0.post0
+six==1.17.0

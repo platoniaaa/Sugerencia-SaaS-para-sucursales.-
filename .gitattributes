@@ -1,0 +1,7 @@
+# Los .cmd salen con CRLF al hacer checkout: cmd.exe con saltos Unix puede saltarse
+# lineas o etiquetas.
+*.cmd text eol=crlf
+*.bat text eol=crlf
+# Este se manda suelto (y el instalador suelto lo baja tal cual de GitHub): se guarda
+# con CRLF en el repositorio mismo, no solo al hacer checkout.
+INSTALAR?PLATAFORMA.cmd -text

@@ -2,23 +2,32 @@
 import json
 
 import pytest
-from fastapi.testclient import TestClient
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
-from sqlalchemy.pool import StaticPool
 
-from src.db import Base, get_db
-from src.main import app
-from src.models import (
-    DimProducto,
-    DimSucursal,
-    PostVentaFila,
-    PostVentaMeta,
-    Sugerido,
-    Usuario,
-    VentaMensual,
-)
-from src.services.auth import hash_password, requiere_auth
+try:
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine
+    from sqlalchemy.orm import sessionmaker
+    from sqlalchemy.pool import StaticPool
+
+    from src.db import Base, get_db
+    from src.main import app
+    from src.models import (
+        DimProducto,
+        DimSucursal,
+        PostVentaFila,
+        PostVentaMeta,
+        Sugerido,
+        Usuario,
+        VentaMensual,
+    )
+    from src.services.auth import hash_password, requiere_auth
+except ModuleNotFoundError:
+    # El PC del motor no tiene las dependencias de la plataforma (fastapi,
+    # sqlalchemy). Ahi corren solo los tests de esta carpeta que son del motor,
+    # como `test_crudos_varias_carpetas.py`: antes este import tumbaba la carpeta
+    # entera y esos tests no corrian nunca. Los fixtures de abajo solo los pide
+    # `test_api.py`.
+    collect_ignore = ["test_api.py"]
 
 
 @pytest.fixture()

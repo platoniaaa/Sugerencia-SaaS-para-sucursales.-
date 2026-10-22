@@ -1,0 +1,37 @@
+# Librerias del MOTOR (el job diario y el agente del PC), con la version exacta.
+#
+# Sale del entorno con que corre el motor en el PC del dueño (Python 3.14.4,
+# apps/api/.venv, `pip freeze` del 19-10-2026). Ese entorno no se podia rearmar
+# desde requirements.txt: ese archivo es el de la API (fastapi, sqlalchemy, duckdb,
+# todo con ">="), que el motor no usa, y le faltaba python-tds.
+#
+# Lo usan instalar_pc_jefa.ps1, instalar_agente.ps1 y el boton "Actualizar motor"
+# (el agente reinstala con este archivo cuando cambia). Para correr las pruebas en
+# ese PC: requirements-motor-pruebas.txt.
+#
+# Al subir una version: probarla primero en un entorno nuevo con la suite del motor
+# (tests_motor y tests) y recien despues cambiarla aca.
+
+# Calculo: dataframes y lectura de los Excel.
+polars==1.42.1
+polars-runtime-32==1.42.1
+fastexcel==0.20.2
+# numpy no lo importa el motor: es una dependencia opcional de polars (to_numpy y
+# otras conversiones) y estaba en el entorno que corre bien.
+numpy==2.5.1
+openpyxl==3.1.5
+et_xmlfile==2.0.0
+
+# Publicacion en la plataforma.
+httpx==0.28.1
+httpcore==1.0.9
+h11==0.16.0
+anyio==4.14.2
+idna==3.18
+certifi==2026.7.22
+# El proxy de la empresa intercepta el HTTPS: confia en los certificados de Windows.
+truststore==0.10.4
+
+# Conector SQL del ERP (src/motor/conectores/sql_flexline.py). Hoy apagado; se
+# importa recien al usarlo.
+python-tds==1.17.1

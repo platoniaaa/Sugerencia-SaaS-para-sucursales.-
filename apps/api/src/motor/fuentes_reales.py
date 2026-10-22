@@ -58,6 +58,9 @@ STOCK_BODEGA_SUCURSAL = {
     "LINDEROS": "LINDEROS", "LO BLANCO": "LO BLANCO", "LO BLANCO 2": "LO BLANCO",
     "MALL PLAZA NORTE": "MALL PLAZA NORTE", "MALL PLAZA SUR": "MALL PLAZA SUR",
     "OVALLE": "OVALLE", "PE X REGULARIZAR": "PE X REGULARIZAR", "PE-FALTANTE": "PE FALTANTE",
+    # Rancagua 2 es una sucursal distinta, pero su stock sigue contando como de
+    # Rancagua a proposito: ver la nota en `parametros.FUSIONES_SUCURSAL`. Separarla
+    # aca sin que el motor evalue por stock deja 5.104 unidades invisibles.
     "PLACILLA": "PLACILLA", "RANCAGUA": "RANCAGUA", "RANCAGUA 2": "RANCAGUA",
     "RANCAGUA 3": "RANCAGUA", "ST_RANCAGUA": "RANCAGUA", "TALCA": "TALCA",
     "TALCA (2)": "TALCA (2)",
@@ -104,6 +107,11 @@ def leer_stock(ruta_excel: str | Path) -> pl.DataFrame:
             costos.append(row[ic] if ic is not None else None)
             # Familia trae "RUBRO N": de ahi sale el rubro que define FILTRO1_Final.
             familias.append(row[ifam] if ifam is not None else None)
+        # Para el panel de Fuentes de datos y la guarda del stock vacio.
+        from .lectores_excel import LECTURAS
+
+        LECTURAS[str(Path(ruta_excel))] = {"filas": len(prods), "hoja": ws.title,
+                                            "fila_encabezado": 1}
     finally:
         wb.close()
 
@@ -178,6 +186,8 @@ def cargar_fuentes_reales(
     mix_reemplazos_xlsx: str | Path | None = None,
     precios_ford_xlsx: str | Path | None = None,
     precios_gildemeister_xlsx: str | Path | None = None,
+    vigentes_ford_xlsx: str | Path | None = None,
+    lista_erp_xlsx: str | Path | None = None,
     fin_mes_cerrado: date | None = None,
     sql_conn=None,
 ) -> dict[str, pl.DataFrame]:
@@ -193,6 +203,13 @@ def cargar_fuentes_reales(
       seguimiento importado, el motor CALCULA las tablas chicas en vez de leerlas
       del snapshot congelado, y deja de depender del Power BI. `fin_mes_cerrado`
       hace falta para el mapeo (elige el master del grupo por venta de 6 meses).
+    - `vigentes_ford_xlsx`: salida del extractor de WINGS corrido sobre los codigos
+      FORD de Curifor (`Vigentes ford*.xlsx`). Mismo formato que la lista de precios;
+      se combina con ella en `lectores_excel.combinar_reemplazos_ford`.
+    - `lista_erp_xlsx`: export de la lista del ERP. Solo se usa para el COSTO de
+      los productos que no estan en el Excel de stock, que lista unicamente lo
+      que hoy tiene existencia: sin esto, los agotados -o sea, los que hay que
+      comprar- salian con la columna de costo en blanco.
     - `sql_conn`: conexión a Flexline (`conectores.sql_flexline.conectar()`), como
       alternativa si algun dia se quiere leer en vivo desde la LAN.
 
@@ -229,6 +246,17 @@ def cargar_fuentes_reales(
         # de ninguna fuente, asi que vive en el codigo y no necesita snapshot.
         "dim_sucursal": dim.dim_sucursal(),
     }
+    # Costo de respaldo: el export del ERP conoce el costo de los productos que
+    # no estan en el Excel de stock. Es opcional: sin el, el motor se comporta
+    # como antes.
+    if lista_erp_xlsx:
+        from . import lectores_excel as _lx
+
+        erp = _lx.leer_lista_erp(lista_erp_xlsx)
+        fuentes["costo_erp"] = erp.select(
+            pl.col("producto").alias("Producto"), pl.col("costo").cast(pl.Utf8).alias("Costo")
+        )
+
     for nombre, archivo, kw in (
         ("mapeo", "mapeo_master.csv", {}),
         ("dim_producto", "dim_producto.csv", {"schema_overrides": S}),
@@ -339,5 +367,72 @@ def cargar_fuentes_reales(
             fuentes[clave] = leer(ruta)
         except Exception as e:  # noqa: BLE001 - una lista rota no puede voltear el sugerido
             print(f"  (no se pudo leer {clave}: {e})")
+
+    # La cadena de reemplazo de FORD llega por DOS archivos que se combinan, los dos
+    # producidos por el mismo extractor de WINGS y con el mismo formato:
+    #   - la lista de FORD (39.622 codigos): cubre el catalogo del proveedor, pero
+    #     de los codigos que Curifor stockea solo trae 4.488 de 9.805.
+    #   - la lista de Curifor (`Vigentes ford*.xlsx`): corre sobre stock + pautas,
+    #     asi que trae los otros. Medido el 22-08-2026: 899 con vigente y cadena,
+    #     1.918 con la direccion inversa, y +861 avisos publicables.
+    # Los dos hacen falta: el primero para la equivalencia de SKU del portal, que
+    # tiene que ser completa; el segundo para los reemplazos de lo que se vende.
+    # A diferencia de los precios, esto SI mueve el sugerido: agrupa el stock y la
+    # demanda del codigo descontinuado con los del vigente, igual que el "mix
+    # andres". Va despues del mapeo a proposito: el mix manda y FORD solo llena
+    # huecos (ver `ampliar_mapeo_con_ford`).
+    if (
+        (precios_ford_xlsx is not None or vigentes_ford_xlsx is not None)
+        and "mapeo" in fuentes
+        and ventas_crudo is not None
+        and fin_mes_cerrado  # sin el mes cerrado no se puede elegir el master del grupo
+    ):
+        try:
+            reemplazos = pl.DataFrame(schema=_lx.ESQUEMA_REEMPLAZOS_FORD)
+            if precios_ford_xlsx is not None:
+                reemplazos = _lx.leer_reemplazos_ford(precios_ford_xlsx)
+            if vigentes_ford_xlsx is not None:
+                # En su propio try: un archivo roto no puede dejar sin efecto los
+                # reemplazos que la lista de precios si trae.
+                try:
+                    # Mismo lector que la lista de precios: es el mismo formato,
+                    # producido por el mismo extractor sobre otra lista de entrada.
+                    curifor = _lx.leer_reemplazos_ford(vigentes_ford_xlsx)
+                    con_vig = curifor.filter(pl.col("clave_vigente").is_not_null()).height
+                    # La de Curifor va SEGUNDA: es la que se consulto hoy, asi que
+                    # manda en el vigente. La de precios conserva `reemplaza_a` donde
+                    # la nueva no tiene dato -medido: 40 pares que solo tiene ella,
+                    # 22 de codigos que el portal no encontro en la corrida nueva-.
+                    reemplazos = _lx.combinar_reemplazos_ford(reemplazos, curifor)
+                    print(f"  vigentes FORD (Curifor): {curifor.height} codigo(s), "
+                          f"{con_vig} con reemplazo.")
+                except Exception as e:  # noqa: BLE001
+                    print(f"  (no se pudieron leer los vigentes de Curifor: {e})")
+            if not reemplazos.is_empty():
+                # Para AGRUPAR solo sirven los codigos que el motor evalua: los que
+                # tienen venta o stock. Agrupar uno que no aparece en ninguna de las
+                # dos no cambia ni una fila del sugerido, y ensancharia el conjunto
+                # sin razon. (Para AVISAR, en cambio, se publica contra el maestro
+                # completo: el vendedor puede pedir cualquier codigo del catalogo.)
+                conocidos = pl.concat([
+                    fuentes["mapeo"].select(pl.col("Producto")),
+                    ventas_crudo.select(pl.col("Producto")),
+                    stock.select(pl.col("Producto")),
+                    *(
+                        [fuentes["dim_producto"].select(pl.col("Producto"))]
+                        if "dim_producto" in fuentes
+                        else []
+                    ),
+                ]).get_column("Producto").drop_nulls().unique()
+                antes = fuentes["mapeo"].height
+                fuentes["mapeo"] = dim.ampliar_mapeo_con_ford(
+                    fuentes["mapeo"], reemplazos, conocidos, ventas_crudo, fin_mes_cerrado
+                )
+                sumados = fuentes["mapeo"].height - antes
+                if sumados:
+                    print(f"  reemplazos FORD: {sumados} producto(s) mas quedaron agrupados.")
+            fuentes["reemplazos_ford"] = reemplazos
+        except Exception as e:  # noqa: BLE001 - mismo criterio que los precios
+            print(f"  (no se pudieron leer los reemplazos FORD: {e})")
 
     return fuentes
